@@ -1040,3 +1040,34 @@ def test_schedule_plist_runs_purge_without_state_flag(tmp_path, monkeypatch):
     assert pl["ProgramArguments"] == ["/usr/local/bin/sekerinshotto", "purge", "--commit", "--json"]
     assert pl["StartCalendarInterval"] == {"Hour": 3, "Minute": 15} and "--state" not in pl["ProgramArguments"]
     assert pl["StandardOutPath"].endswith("logs/purge.log")
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Apple Vision")
+def test_autoadd_takes_only_photo_named_files_and_routes_them(tmp_path):
+    import os
+    inbox = tmp_path / "Downloads"
+    inbox.mkdir()
+    img = Image.new("RGB", (1200, 900), "white")
+    ImageDraw.Draw(img).text((40, 300), "Workshop registration closes 22 January", fill="black",
+                             font=ImageFont.load_default(size=44))
+    img.save(inbox / "Screenshot_20260101_120000_com_android_chrome_ChromeTabbedActivity.png")
+    img.save(inbox / "company-logo.png")                                  # not photo-named: never touched
+    old = 1_700_000_000
+    for f in inbox.iterdir():
+        os.utime(f, (old, old))
+    env = {**os.environ, "SEKERINSHOTTO_STATE": str(tmp_path / "st"), "SEKERINSHOTTO_CONTENT": str(tmp_path / "v")}
+    code, plan = _run("autoadd", str(inbox), env=env)
+    assert plan["data"]["new"] == 1 and plan["data"]["photo_named"] == 1
+    code, res = _run("autoadd", str(inbox), "--commit", env=env)
+    assert code == 0 and res["data"]["written"] == 1 and res["data"]["routed"] == {"quarantine": 1}
+    assert [p.name for p in inbox.iterdir()] == ["company-logo.png"]      # original routed, logo untouched
+    code, again = _run("autoadd", str(inbox), "--commit", env=env)
+    assert again["data"]["new"] == 0
+
+
+def test_watch_job_is_opt_in_and_needs_a_folder(tmp_path, monkeypatch):
+    from sekerinshotto import commands as cm
+    monkeypatch.setattr(cm, "_bin", lambda: "/x/sekerinshotto")
+    pl = cm._plist("watch", _State(tmp_path / "st"), folder="/Users/me/Downloads")
+    assert pl["WatchPaths"] == ["/Users/me/Downloads"] and pl["ProgramArguments"][1:3] == ["autoadd", "/Users/me/Downloads"]
+    assert cm.JOBS["watch"].get("opt_in") is True

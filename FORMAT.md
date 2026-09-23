@@ -261,6 +261,11 @@ Nothing waits on a human, and every non-standard outcome is logged. `cleanup` mo
   daily at 03:15, logging to `<state>/logs/`; it passes no `--state`, so it follows `config use-state`.
   `schedule show` / `schedule remove --commit` manage it. The drop zone routes each new image right after
   its note exists (quarantine, attachments or held), unless `--keep-in-inbox`.
+- `autoadd FOLDER --commit` extracts files named like photos/screenshots (Android `Screenshot_`, `WhatsApp Image`,
+  macOS `Screenshot … at …`, `IMG_/PXL_/VID_/MVIMG_`) that are new by hash and not modified in the last 5 s,
+  then routes the originals like cleanup. Known hashes and other images (logos, avatars) are never touched.
+  `schedule install --job watch --folder DIR --commit` runs it when DIR changes (LaunchAgent WatchPaths,
+  30 s throttle). The watch job is opt-in: the default `schedule install` never installs it.
 - `restore <id|batch> --commit` moves quarantined images back to their original path, never over an
   existing file. Purged images cannot be restored.
 - An image routed by cleanup is never re-extracted from a new copy: its hash stays in the index.
