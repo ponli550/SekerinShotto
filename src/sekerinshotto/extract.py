@@ -33,7 +33,7 @@ _ANDROID = re.compile(r"^Screenshot_(\d{8})_(\d{6})_(.+)$")
 
 _OTHER_NAMES = [   # (regex, app package or None) -> date groups Y M D h m s
     (re.compile(r"^WhatsApp Image (\d{4})-(\d{2})-(\d{2}) at (\d{1,2})\.(\d{2})\.(\d{2})"), "com.whatsapp"),
-    (re.compile(r"^Screenshot (\d{4})-(\d{2})-(\d{2}) at (\d{1,2})\.(\d{2})\.(\d{2})"), "com.apple.macos"),
+    (re.compile(r"^Screenshot (\d{4})-(\d{2})-(\d{2}) at (\d{1,2})\.(\d{2})\.(\d{2})"), "com.apple.macos.screenshot"),
     (re.compile(r"^(?:IMG|VID|PXL|MVIMG)_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})"), None),
     (re.compile(r"^Screenshot_(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})"), None),
 ]
@@ -45,8 +45,11 @@ def parse_filename(name: str) -> dict:
         m2 = rx.match(stem)
         if m2:
             y, mo, d, h, mi, sec = (int(x) for x in m2.groups())
-            if stem.upper().rstrip().endswith("PM") and h < 12:        # macOS: "… at 3.45.12 PM"
+            ampm = stem.upper().rstrip()[-2:]                         # macOS: "… at 3.45.12 PM"
+            if ampm == "PM" and h < 12:
                 h += 12
+            elif ampm == "AM" and h == 12:                            # 12.29 AM is just after midnight
+                h = 0
             try:
                 out = {"captured_at": datetime(y, mo, d, h, mi, sec).strftime("%Y-%m-%dT%H:%M:%S")}
             except ValueError:
