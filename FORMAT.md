@@ -5,7 +5,7 @@ vault wrapper manages an Obsidian vault. Neither imports the other. They meet
 only at the files and the JSON described here. Any future ingester (PDF, web
 clip, …) that writes this format plugs into the same wrapper.
 
-Status: draft v0.6.0 — 2026-09-23.
+Status: draft v0.7.0 — 2026-09-23.
 
 ## 1. CLI contract (both tools)
 
@@ -89,7 +89,8 @@ group: grp-0042
 rank: 1
 urls:
   - https://example.com/event
-domains: [example.com]
+urls_unverified: [examp1e.com/docs]
+domains: [example.com, examp1e.com]
 tags: [sekerinshotto, event]
 ---
 
@@ -99,6 +100,7 @@ tags: [sekerinshotto, event]
 
 ## Links
 - [example.com/event](https://example.com/event) · from QR
+- `https://examp1e.com/docs` · read by OCR, unverified — not a link
 
 ## Group
 [[grp-0042]] · rank 1 of 3
@@ -107,6 +109,18 @@ tags: [sekerinshotto, event]
 ## Notes
 Anything here is owned by the user and never touched by any tool.
 ```
+
+URL rendering rule:
+- Only QR-decoded URLs (`verified_by: qr`) are links, in the body and in `urls`.
+- OCR-read URLs are code text in the body and go in `urls_unverified` without a scheme, so neither the
+  reading view nor Obsidian's Properties panel makes them clickable. Measured reason: on the first
+  182-screenshot sample OCR produced `docs.qoogle.com`, `Inkd.in` and `|1nk.dev` — lookalike domains —
+  while Vision reported confidence 1.0 for them. Vision's line confidence is not usable for URLs.
+
+QR types (`qr` in frontmatter, `type` in the manifest): `url`, `payment`, `wifi`, `contact`, `mailto`,
+`tel`, `smsto`, `geo`, `text`. `payment` = EMVCo merchant QR (DuitNow, PayNow, ...), accepted only if the
+whole payload parses as tag-length-value and its CRC-16/CCITT matches; real DuitNow codes use format
+indicator `02`, so no prefix check. Payment payloads carry personal names and account identifiers.
 
 Ownership:
 - The ingester may rewrite only the frontmatter keys it wrote and the text between the `generated` markers.
@@ -143,12 +157,16 @@ can see it; working state and bulky images stay out of the vault.
   held/                      images that failed to read, kept (no clock), retried automatically
   quarantine/<batch_id>/     extracted images, purged 7 days after quarantined_at
   index.sqlite               hashes, text (FTS), entities, state, tombstones
+  binding.json               which content root this state writes to
+  journal.key                HMAC key for the journal chain (0600); losing it makes old journals unverifiable
   batches/*.jsonl            manifests (§2)
   journal/*.jsonl            every file operation, for undo
   audit/*.jsonl              one line per failed or special-cased image
 ```
 
 Defaults:
+- A state folder is bound to one content root on first commit, in `<state>/binding.json` (not the DB,
+  which is disposable). Passing a different `--content` later is an error.
 - `<state>` = `~/.local/share/sekerinshotto/` (override `--state PATH`). Local disk, not synced. Backed up only if Time Machine (or similar) covers it.
 - `<content>` = the path given by `--content PATH`. Until the main memory vault exists, that folder is
   opened in Obsidian as its own vault. Later it is moved (a real folder, not a symlink) into the main
@@ -224,6 +242,16 @@ extracted and tidied, as a tool the calling LLM uses directly over the finished 
 - Write-back: if the LLM acts on a Laya answer, it writes through the normal `--commit` path with
   `decided_by: laya` (or `llm`), and the note records `model_rev`.
 - Optional install; if missing, the query commands exit `1` with a clear reason. Nothing else depends on it.
+
+## 7a. Redaction — at the LLM boundary only (decided 2026-09-23)
+
+- Notes, manifests and the index keep full text. The vault is the user's own memory.
+- Anything leaving the tool toward a calling LLM is redacted: `--json` output that carries OCR text,
+  QR payloads or excerpts (search, show, list-uncategorized, Laya results). Scrubbed: NRIC (with YYMMDD
+  check), names (honorific, "Prepared by" cue, bin/binti/a/l/a/p), email, Malaysian phone, payment QR
+  names and account fields. Ported from VeriPay `redact()`; known gap: bare names with no cue.
+- Wi-Fi QR passwords are the exception: redacted before anything is written, everywhere.
+- Phase 1 emits no text-bearing JSON, so the redaction module lands with the first command that does.
 
 ## 8. Panels (human surface, via panvim)
 
