@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
-EXTRACTOR_VERSION = "1"
+EXTRACTOR_VERSION = "2"
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".heic", ".webp", ".tif", ".tiff", ".bmp", ".gif"}
 
 FAIL_MIN_CHARS = 3            # fewer chars and no barcode -> failed/no_text
@@ -135,19 +135,72 @@ def domain_of(url: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
-def find_urls(text: str) -> list[tuple[str, str]]:
-    """[(raw, normalized)] in order of appearance, deduplicated by normalized form."""
+_CONT = re.compile(r"^[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+$")
+_DATEISH = re.compile(r"^[\d/.\-:]+$")
+_ELLIPSIS = ("…", "...")
+_STRAY_END = "<>|"            # OCR sometimes reads a final "/" as "<"
+
+
+def _continues(url: str, nxt: str, cur_box, nxt_box) -> bool:
+    """Is `nxt` the wrapped remainder of a URL that ended at the end of the previous line?"""
+    t = nxt.strip().rstrip(_STRAY_END)
+    if len(t) < 2 or not _CONT.match(t) or not re.search(r"[A-Za-z]", t) or _DATEISH.match(t):
+        return False
+    if re.match(r"(?i)https?://|www\.", t):
+        return False                                   # a new URL, not a continuation
+    if cur_box and nxt_box:
+        gap = nxt_box[1] - (cur_box[1] + cur_box[3])
+        if gap > 1.5 * cur_box[3] or gap < -0.5 * cur_box[3]:
+            return False
+    return t[0] in "/-" or url[-1] in "/-=?&_" or "/" in t or "-" in t
+
+
+def find_urls_in_lines(lines) -> list[dict]:
+    """lines: [(text, conf, box|None), ...] in reading order.
+    -> [{raw, url, confidence, joined, truncated}] deduplicated by normalized URL."""
     seen, out = set(), []
-    for m in _URL_RE.finditer(text):
-        raw = m.group(0).rstrip(_TRAIL)
-        if "@" in raw.split("/")[0]:          # an email address, not a URL
-            continue
-        norm = _norm_url(raw)
-        if not domain_of(norm) or norm in seen:
-            continue
-        seen.add(norm)
-        out.append((raw, norm))
+    for i, line in enumerate(lines):
+        text, conf = line[0], line[1]
+        box = line[2] if len(line) > 2 else None
+        for m in _URL_RE.finditer(text):
+            raw = m.group(0)
+            if "@" in raw.split("//")[-1].split("/")[0]:
+                continue                               # user@host: an email address
+            after = text[m.end():m.end() + 3]
+            truncated = raw.endswith(_ELLIPSIS) or after.startswith(_ELLIPSIS)
+            raw = raw.rstrip(_TRAIL)
+            joined = 0
+            at_end = text[m.end():].strip() == ""
+            j = i
+            while at_end and not truncated and j + 1 < len(lines):
+                nxt = lines[j + 1]
+                if not _continues(raw, nxt[0], lines[j][2] if len(lines[j]) > 2 else None,
+                                  nxt[2] if len(nxt) > 2 else None):
+                    break
+                piece = nxt[0].strip().rstrip(_STRAY_END)
+                truncated = piece.endswith(_ELLIPSIS)
+                raw = raw + piece.rstrip(_TRAIL)
+                conf = min(conf, nxt[1])
+                joined += 1
+                j += 1
+            norm = _norm_url(raw)
+            if not domain_of(norm) or norm in seen:
+                continue
+            seen.add(norm)
+            out.append({"raw": raw, "url": norm, "confidence": round(conf, 2),
+                        "joined": joined, "truncated": truncated})
     return out
+
+
+def find_urls(text: str) -> list[tuple[str, str]]:
+    """[(raw, normalized)] from plain text (no geometry; lines still joined by text rules)."""
+    return [(u["raw"], u["url"]) for u in find_urls_in_lines([(t, 1.0) for t in text.splitlines()])]
+
+
+def raw_host(raw: str) -> str:
+    """Host exactly as OCR read it, case and odd characters preserved (|1nk.dev, Inkd.in)."""
+    r = re.sub(r"(?i)^https?://", "", raw)
+    return re.split(r"[/?#]", r, maxsplit=1)[0].split(":")[0]
 
 
 # ---- the extraction record ----
@@ -170,7 +223,7 @@ class Extraction:
 
     @property
     def text(self) -> str:
-        return "\n".join(s for s, _ in self.lines)
+        return "\n".join(t[0] for t in self.lines)
 
     @property
     def domains(self) -> list[str]:
@@ -225,7 +278,10 @@ def _vision_read(path: Path):
     for obs in text_req.results() or []:
         cand = obs.topCandidates_(1)
         if cand:
-            lines.append((str(cand[0].string()), float(cand[0].confidence())))
+            bb = obs.boundingBox()          # normalized, origin bottom-left
+            box = (bb.origin.x, 1 - bb.origin.y - bb.size.height, bb.size.width, bb.size.height)
+            lines.append((str(cand[0].string()), float(cand[0].confidence()), box))
+    lines.sort(key=lambda t: (round(t[2][1], 3), t[2][0]))      # reading order: top, then left
     bars = []
     for obs in bar_req.results() or []:
         payload = obs.payloadStringValue()
@@ -279,17 +335,14 @@ def _extract(path: Path, file_id: str | None = None) -> Extraction:
             qr_urls.add(norm)
             ex.urls.append({"raw": payload, "url": norm, "verified_by": "qr", "confidence": 1.0})
 
-    conf_by_line = {s: c for s, c in ex.lines}
-    for raw, norm in find_urls(ex.text):
-        if norm in qr_urls:
+    for u in find_urls_in_lines(ex.lines):
+        if u["url"] in qr_urls:
             continue
-        line_conf = next((c for s, c in conf_by_line.items() if raw in s), None)
-        ex.urls.append({"raw": raw, "url": norm, "verified_by": "none",
-                        "confidence": round(line_conf, 2) if line_conf is not None else None})
+        ex.urls.append({**u, "verified_by": "none"})
 
-    chars = sum(len(s) for s, _ in ex.lines)
+    chars = sum(len(t[0]) for t in ex.lines)
     if chars:
-        ex.ocr_confidence = round(sum(len(s) * c for s, c in ex.lines) / chars, 3)
+        ex.ocr_confidence = round(sum(len(t[0]) * t[1] for t in ex.lines) / chars, 3)
     if undecoded and not decoded:
         ex.status, ex.status_reason = "failed", "qr_undecodable"
     elif chars < FAIL_MIN_CHARS and not decoded:

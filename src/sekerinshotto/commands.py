@@ -13,7 +13,9 @@ from .contract import (AGENT_CONTRACT, COMMIT_ARG, COMMON_ARGS, EXIT_CODES, REGI
                        CONTRACT_VERSION, Arg, Result, ToolError, command)
 from .extract import EXTRACTOR_VERSION, extract, iter_images, sha256_file
 from .notes import NoteConflict, manifest_record, note_relpath, render, text_from_note
+from .domains import DomainIndex, update as domains_update
 from .state import State, now_iso, verify_journal
+from .urlfix import fix_urls, qr_domains_of
 
 
 def _content_root(state: State, arg: str | None, required: bool) -> Path | None:
@@ -108,6 +110,12 @@ def cmd_ingest(a, state: State):
         manifest = state.dir("batches") / f"{batch_id}.jsonl"
         with ThreadPoolExecutor(max_workers=max(1, a.workers)) as pool:
             results = list(pool.map(lambda t: extract(t[0], t[1]), todo))
+        dom = DomainIndex(state.dir("domains"))
+        qr_known = qr_domains_of([r[0] for r in con.execute(
+            "SELECT value FROM entities WHERE kind='url' AND verified_by='qr'")], dom)
+        qr_known |= qr_domains_of([u["url"] for ex in results for u in ex.urls if u["verified_by"] == "qr"], dom)
+        for ex in results:
+            fix_urls(ex, dom, qr_known)
         written, failed, conflicts, times = 0, [], [], []
         ingested = now_iso()
         with open(manifest, "a") as mf:
@@ -137,8 +145,10 @@ def cmd_ingest(a, state: State):
         con.commit()
     data = {**plan, "committed": True, "batch_id": batch_id, "written": written,
             "failed": failed, "conflicts": conflicts,
-            "urls": {"from_qr": sum(1 for ex in results for u in ex.urls if u["verified_by"] == "qr"),
-                     "from_ocr": sum(1 for ex in results for u in ex.urls if u["verified_by"] == "none")},
+            "urls": {**_count(u["verified_by"] for ex in results for u in ex.urls),
+                     "corrected": sum(1 for ex in results for u in ex.urls if u.get("corrected")),
+                     "flagged": _count(u["flag"] for ex in results for u in ex.urls if u.get("flag"))},
+            "domain_list": dom.info.get("tranco_list_id") or "missing: run `domains update --commit`",
             "qr_types": _count(b["type"] for ex in results for b in ex.barcodes),
             "timing": {"total_s": round(time.perf_counter() - t0, 1),
                        "per_image_median_ms": int(statistics.median(times)) if times else 0,
@@ -171,8 +181,9 @@ def _index(con, rec: dict, text: str, ingested: str) -> None:
                  rec["text_chars"], rec["note_path"], rec["batch_id"], ingested))
     ents = rec["entities"]
     for u in ents["urls"]:
+        sub = u.get("flag") or ("corrected" if u.get("corrected") else None)
         con.execute("INSERT INTO entities VALUES (?,?,?,?,?,?,?)",
-                    (rec["id"], "url", u["url"], u["raw"], None, u["verified_by"], u["confidence"]))
+                    (rec["id"], "url", u["url"], u["raw"], sub, u["verified_by"], u.get("confidence")))
     for b in ents["qr"]:
         con.execute("INSERT INTO entities VALUES (?,?,?,?,?,?,?)",
                     (rec["id"], "qr", b["payload"], None, b["type"], "qr", 1.0))
@@ -204,6 +215,8 @@ def cmd_status(a, state: State):
         "qr_by_type": q("SELECT subtype, COUNT(*) FROM entities WHERE kind='qr' GROUP BY subtype"),
         "top_apps": q("SELECT source_app, COUNT(*) c FROM items GROUP BY source_app ORDER BY c DESC LIMIT 10"),
         "journal": {"files": len(journals), "intact": not broken, "broken": broken},
+        "urls_corrected_or_flagged": q("SELECT subtype, COUNT(*) FROM entities WHERE kind='url' AND subtype IS NOT NULL GROUP BY subtype"),
+        "domain_list": DomainIndex(state.dir("domains")).info or None,
     })
 
 
@@ -234,3 +247,20 @@ def cmd_reindex(a, state: State):
             _index(con, rec, text, rec.get("ingested", now_iso()))
         con.commit()
     return Result({**plan, "committed": True, "rebuilt": len(latest)})
+
+
+# ---------------------------------------------------------------- domains
+@command("domains update", "Download the reference lists used to check and correct URLs",
+         writes=True,
+         details="Fetches the latest Tranco top-1M ranking, the Public Suffix List and the IANA TLD "
+                 "list into <state>/domains/. This is the only command that uses the network, and it "
+                 "fetches reference lists only, never a URL read from a screenshot. Re-run ingest "
+                 "afterwards to apply corrections to images already extracted.")
+def cmd_domains_update(a, state: State):
+    info = DomainIndex(state.dir("domains")).info
+    if not a.commit:
+        return Result({"committed": False, "current": info or None,
+                       "would_download": ["Tranco top-1M (~10 MB)", "Public Suffix List", "IANA TLD list"]})
+    with state.lock():
+        new = domains_update(state.dir("domains"))
+    return Result({"committed": True, "previous": info or None, "current": new})
