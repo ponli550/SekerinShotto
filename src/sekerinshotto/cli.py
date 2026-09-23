@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from . import commands  # noqa: F401  (registers commands)
@@ -52,8 +53,22 @@ def _path_of(argv: list[str]) -> str:
     return "sekerinshotto"
 
 
+def _guard_stdout() -> None:
+    """Keep fd 1 for our own output only: native code (Apple Vision) writes warnings to fd 1."""
+    from . import contract
+    try:
+        real = os.fdopen(os.dup(1), "w", buffering=1)
+        sys.stdout.flush()
+        os.dup2(2, 1)
+        sys.stdout = os.fdopen(os.dup(1), "w", buffering=1)      # stray Python prints -> stderr too
+        contract.OUT = real
+    except OSError:
+        pass                                                     # no usable fds: leave things as they are
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
+    _guard_stdout()
     as_json = "--json" in argv
     path = _path_of(argv)
     try:

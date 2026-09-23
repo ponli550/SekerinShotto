@@ -1006,3 +1006,16 @@ def test_dropzone_ask_cancels_without_consent(tmp_path, answer, starts):
     p = subprocess.run([sys.executable, "-m", "sekerinshotto.cli", "dropzone", "--ask", "--no-finder"],
                        input=answer + "\n", capture_output=True, text=True, env=env, timeout=30)
     assert "cancelled" in p.stdout and "DROP ZONE" not in p.stdout
+
+
+def test_native_stdout_noise_cannot_corrupt_the_envelope(tmp_path):
+    """Apple Vision printed a warning on fd 1 in a VM and broke --json. Simulate a C-level write to fd 1
+    during a command and require stdout to still be exactly one JSON object."""
+    import os
+    code = ("import os, sys; from sekerinshotto import cli, contract; "
+            "orig = contract.emit; "
+            "contract.emit = lambda *a, **k: (os.write(1, b'E5RT noise from C\\n'), orig(*a, **k)); "
+            "cli.emit = contract.emit; sys.exit(cli.main(['schema', '--json']))")
+    p = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                       env={**os.environ, "SEKERINSHOTTO_STATE": str(tmp_path / "s")})
+    assert json.loads(p.stdout)["ok"] is True and "E5RT noise" in p.stderr
