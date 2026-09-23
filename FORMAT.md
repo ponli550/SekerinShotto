@@ -5,7 +5,7 @@ vault wrapper manages an Obsidian vault. Neither imports the other. They meet
 only at the files and the JSON described here. Any future ingester (PDF, web
 clip, …) that writes this format plugs into the same wrapper.
 
-Status: draft v0.16.0 — 2026-09-23.
+Status: draft v0.17.0 — 2026-09-23.
 
 ## 1. CLI contract (both tools)
 
@@ -317,6 +317,24 @@ Measured on the 182-screenshot sample: 6 uncategorized (3 %); 5 groups, 12 scree
 visual check (a re-screenshot in the gallery, a toast-only change, a certificate in a viewer vs a crop, a
 document page vs a crop of one section, one calendar shown four ways). Two fresh runs produce identical
 categories, group ids and files.
+
+## 6b. Scroll sequences
+
+Screenshots of one long page (a chat, an article, a document) scrolled through a few seconds apart are
+stitched into one readable text.
+
+- Link rule: same app, captured ≤ 300 s apart, not in the same duplicate group; the longest run of
+  identical content lines (compared by letters and digits only, since OCR spaces the same line differently
+  across shots) is ≥ 2 lines and ≥ 30 chars, ends within 3 lines of the upper shot's bottom, starts within
+  3 lines of the lower shot's top, and the lower shot adds ≥ 3 new lines. Scrolling up is detected too.
+  Status and gesture bar lines are excluded (`chrome_top_n` / `chrome_bottom_n` in the record).
+- Chains of links form a sequence `seq-<id8>`, id kept across runs like groups. Hub note
+  `sequences/<sid>.md`: parts in page order, then the stitched text (each seam's repeated lines once).
+  Member notes get `sequence`, `seq_part`, `seq_size` and a `## Sequence` link.
+- Measured: a drawn 30-line page cut into 3 overlapping shots stitches to all 30 lines, each once, in
+  order. On the 182-screenshot sample: 0 sequences; a visual check of the closest same-app pairs found no
+  clean scrolls (media viewers swiping between images, different chats; one sleep report scrolled up
+  shares a single line, below the bar). Precision on real scrolled screenshots is therefore unmeasured.
 
 ## 7. Laya — query layer, after everything (implemented)
 

@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
-EXTRACTOR_VERSION = "6"
+EXTRACTOR_VERSION = "7"
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".heic", ".webp", ".tif", ".tiff", ".bmp", ".gif"}
 
 FAIL_MIN_CHARS = 3            # fewer chars and no barcode -> failed/no_text
@@ -339,6 +339,8 @@ class Extraction:
     keep: bool = False
     confirmed_by: str | None = None
     copies: list = field(default_factory=list)        # byte-identical files elsewhere: {path, state, ...}
+    chrome_top_n: int = 0                             # OCR lines in the status-bar strip (reading order: first)
+    chrome_bottom_n: int = 0                          # OCR lines in the gesture-bar strip (last)
     elapsed_ms: int = 0
 
     @property
@@ -461,6 +463,8 @@ def _extract(path: Path, file_id: str | None = None) -> Extraction:
         ex.urls.append({**u, "verified_by": "none"})
 
     ex.toks = token_hashes(content_tokens(ex.lines))
+    ex.chrome_top_n = sum(1 for l in ex.lines if len(l) > 2 and l[2][1] < CHROME_TOP)
+    ex.chrome_bottom_n = sum(1 for l in ex.lines if len(l) > 2 and l[2][1] > CHROME_BOTTOM)
     ex.content_tokens, ex.sig, ex.dhash = len(ex.toks), minhash(ex.toks), dhash_of(path)
     vm = visual_metrics(path, ex.lines)
     ex.text_coverage, ex.grays, ex.edges = vm["text_coverage"], vm["grays"], vm["edges"]

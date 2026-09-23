@@ -74,6 +74,14 @@ def render(view: str, con, content: Path | None, state_root: Path, category: str
                 FROM items WHERE group_id IS NOT NULL GROUP BY 1 ORDER BY 2 DESC, 1"""):
             best = con.execute("SELECT note_path FROM items WHERE group_id=? AND rank=1", (gid,)).fetchone()[0]
             out.append(f"  {gid:<13} {n:>2} copies  {cat:<12} best: {Path(best).stem if best else '-'}")
+        seqs = Counter()
+        for (rec,) in _q(con, "SELECT record FROM items WHERE record IS NOT NULL"):
+            sid = json.loads(rec).get("sequence")
+            if sid:
+                seqs[sid] += 1
+        if seqs:
+            out += ["", "scroll sequences · stitched in page order"]
+            out += [f"  {sid:<13} {n:>2} parts" for sid, n in sorted(seqs.items())]
     elif view == "audit":
         out += ["held and kept images · reasons, never content", ""]
         for iid, st, reason, att, note in _q(con, """SELECT substr(id,8,8), source_state, hold_reason,
@@ -137,7 +145,7 @@ def keys_for(name: str) -> str:
     elif name == "ss-concepts":
         rows = ["l\tnotes with this term (redacted)\tterm-side\tsekerinshotto search {row} --limit 100"]
     elif name == "ss-groups":
-        rows = ["o\topen the group hub note\tterm-side\tnvim -R \"$(sekerinshotto panel path {row})\""]
+        rows = ["o\topen the group or sequence hub note\tterm-side\tnvim -R \"$(sekerinshotto panel path {row})\""]
     elif name in ("ss-audit", "ss-notes"):
         rows = [_note_open(),
                 "i\topen the image\tterm\topen \"$(sekerinshotto panel image {row})\"",

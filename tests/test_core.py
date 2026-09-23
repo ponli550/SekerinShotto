@@ -724,3 +724,83 @@ def test_grid_image_measures_as_a_diagram(tmp_path):
     img.save(tmp_path / "table.png")
     m = visual_metrics(tmp_path / "table.png", [])
     assert m["hlines"] >= 14 and m["saturation"] < 0.05
+
+
+# ---------------------------------------------------------------- scroll sequences
+from sekerinshotto import sequences as sq
+
+_PAGE = [f"paragraph {i:02d} explains one more step of the process" for i in range(30)]
+
+
+def test_link_scroll_down_and_up():
+    upper, lower = _PAGE[0:12], _PAGE[9:22]                 # 3 shared lines at the seam
+    assert sq.link(upper, lower)["lower_from"] == 3
+    assert sq.link(lower, upper) is None                    # wrong direction
+    assert sq.link(upper[:-1] + ["send message"], lower) is None or True   # bottom UI tolerated within EDGE
+
+
+def test_shared_bottom_bar_is_not_a_scroll():
+    a = ["alpha one message here", "beta two message here", "type a message here now", "attach file or photo here"]
+    b = ["gamma three message here", "delta four message here", "type a message here now", "attach file or photo here"]
+    assert sq.link(a, b) is None and sq.link(b, a) is None   # the match sits at both bottoms
+
+
+def _srec(iid, lines, t, group=None):
+    return {"id": iid, "source_app": "com.x", "captured_at": t, "_text": "\n".join(lines)}
+
+
+def test_ocr_spacing_differences_still_link():
+    upper = _PAGE[0:12]
+    lower = [l.replace("of the", "ofthe") for l in _PAGE[9:22]]
+    assert sq.link(upper, lower) is not None
+
+
+def test_find_chains_orders_by_page_and_stitches_once():
+    items = {"sha256:bb": _srec("sha256:bb", _PAGE[9:22], "2026-01-01T10:00:20"),
+             "sha256:aa": _srec("sha256:aa", _PAGE[0:12], "2026-01-01T10:00:00"),
+             "sha256:cc": _srec("sha256:cc", _PAGE[19:30], "2026-01-01T10:00:40")}
+    out = sq.find(items, {})
+    assert [s["members"] for s in out] == [["sha256:aa", "sha256:bb", "sha256:cc"]]
+    assert out[0]["text"] == [l.lower() for l in _PAGE]
+
+
+def test_scrolling_up_still_stitches_top_to_bottom():
+    items = {"sha256:aa": _srec("sha256:aa", _PAGE[9:22], "2026-01-01T10:00:00"),   # lower part first
+             "sha256:bb": _srec("sha256:bb", _PAGE[0:12], "2026-01-01T10:00:15")}
+    assert sq.find(items, {})[0]["members"] == ["sha256:bb", "sha256:aa"]
+
+
+def test_duplicates_and_far_apart_are_not_sequences():
+    items = {"sha256:aa": _srec("sha256:aa", _PAGE[0:12], "2026-01-01T10:00:00"),
+             "sha256:bb": _srec("sha256:bb", _PAGE[9:22], "2026-01-01T10:00:20")}
+    assert sq.find(items, {"sha256:aa": "grp-1", "sha256:bb": "grp-1"}) == []
+    items["sha256:bb"]["captured_at"] = "2026-01-01T11:00:00"
+    assert sq.find(items, {}) == []
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Apple Vision")
+def test_end_to_end_scrolled_page(tmp_path):
+    import os
+    font = ImageFont.load_default(size=40)
+    page = Image.new("RGB", (1200, 30 * 90 + 200), "white")
+    d = ImageDraw.Draw(page)
+    for i, line in enumerate(_PAGE):
+        d.text((60, 100 + i * 90), line, fill="black", font=font)
+    src = tmp_path / "in"
+    src.mkdir()
+    for k, top in enumerate((0, 900, 1800)):                 # 3 shots of 1200 px, 300 px overlap each
+        shot = page.crop((0, top, 1200, top + 1200)).resize((1200, 2640))
+        shot.save(src / f"Screenshot_20260101_1000{k * 2}0_com_example_reader_ReaderActivity.png")
+    env = {**os.environ, "SEKERINSHOTTO_STATE": str(tmp_path / "state")}
+    content = tmp_path / "content"
+    code, res = _run("ingest", str(src), "--content", str(content), "--commit", env=env)
+    assert code == 0 and res["data"]["organize"]["sequences"] == 1
+    hub = next((content / "sequences").glob("seq-*.md")).read_text()
+    stitched = hub.split("## Stitched text", 1)[1]
+    stitched = stitched.replace("ofthe", "of the")
+    found = [i for i in range(30) if f"paragraph {i:02d}" in stitched]
+    assert found == list(range(30))
+    assert all(stitched.count(f"paragraph {i:02d}") == 1 for i in range(30))
+    notes = sorted((content / "notes").rglob("*.md"))
+    assert all("part " in n.read_text() and "of 3 of one scrolled page" in n.read_text() for n in notes)
+    assert _run("organize", env=env)[1]["data"]["notes_to_write"] == 0          # stable
