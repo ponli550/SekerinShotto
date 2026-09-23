@@ -471,3 +471,57 @@ def test_cleanup_purge_restore_round_trip(sample):
     code, bad = _run("restore", iid, env=env)
     assert code == 1 and "purged images cannot be restored" in bad["error"]
     assert _run("status", env=env)[1]["data"]["journal"]["intact"]
+
+
+# ---------------------------------------------------------------- redaction + text commands (phase 5)
+from sekerinshotto.redact import redact, redact_qr
+from sekerinshotto.commands import _fts_query
+
+
+@pytest.mark.parametrize("text,out", [
+    ("+60 12-256 7486 said hi", "[PHONE] said hi"),
+    ("call 012-345 6789", "call [PHONE]"),
+    ("IC 900101-14-5678 ok", "IC [IC] ok"),
+    ("ref 991399-12-3456", "ref 991399-12-3456"),             # not a valid YYMMDD: a reference number
+    ("Prepared by Ahmad Bin Ali", "Prepared by [NAME]"),
+    ("Dr. Siti Aminah", "[NAME]"),
+    ("Muhammad Amirul Aziz bin Hassan paid", "[NAME] paid"),  # bounded: the sentence survives
+    ("NUR ALIA BINTI OSMAN", "[NAME]"),
+    ("mail a.b@um.edu.my", "mail [EMAIL]"),
+    ("Invoice 2024 total RM 50", "Invoice 2024 total RM 50"),
+])
+def test_redact(text, out):
+    assert redact(text)[0] == out
+
+
+def test_redact_keeps_lines():
+    assert redact("a\nDr. X Y\nb")[0] == "a\n[NAME]\nb"
+
+
+def test_payment_qr_is_replaced_whole():
+    q = redact_qr({"type": "payment", "symbology": "QR", "payload": "000202…NAME…6304ABCD",
+                   "merchant_name": "SOMEONE", "merchant_city": "KL"})
+    assert q["payload"] == "[PAYMENT QR]" and q["merchant_name"] == "[NAME]" and "SOMEONE" not in json.dumps(q)
+
+
+def test_fts_query_neutralizes_operators():
+    assert _fts_query('AND OR "( hack*') == '"AND" "OR" "hack"'
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Apple Vision")
+def test_search_show_and_grounded_tag(sample):
+    src, content, env = sample
+    _run("ingest", str(src), "--content", str(content), "--commit", env=env)
+    code, s = _run("search", "register", env=env)
+    assert code == 0 and s["data"]["total"] == 1 and "«Register»" in s["data"]["results"][0]["excerpt"]
+    iid = s["data"]["results"][0]["id"]
+    assert _run("show", iid[:15], env=env)[1]["data"]["urls"][0]["verified_by"] == "qr"
+    code, bad = _run("tag", iid, "--category", "event", "--quote", "totally made up words", env=env)
+    assert code == 1 and "does not appear" in bad["error"]
+    code, short = _run("tag", iid, "--category", "event", env=env)
+    assert code == 1 and "--quote" in short["error"]
+    code, ok = _run("tag", iid, "--category", "signup", "--quote", "REGISTER AT docs.example", "--commit", env=env)
+    assert code == 0 and ok["data"]["note"].startswith("notes/signup/")
+    _run("organize", "--commit", env=env)
+    shown = _run("show", iid, env=env)[1]["data"]
+    assert shown["category"] == "signup" and shown["decided_by"] == "llm" and "quoting" in shown["why"]

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import statistics
 import time
@@ -663,3 +664,177 @@ def cmd_confirm(a, state: State):
                  "be kept only after restore.")
 def cmd_keep(a, state: State):
     return _flag(state, a, keep=True)
+
+
+# ---------------------------------------------------------------- text commands (phase 5)
+from .notes import read_frontmatter, set_frontmatter  # noqa: E402
+from .redact import redact, redact_qr  # noqa: E402
+from .rules import _CATEGORY  # noqa: E402
+
+_FILTER_ARGS = [
+    Arg("--category", "only this category"), Arg("--domain", "only notes with a URL on this domain (suffix)"),
+    Arg("--app", "only screenshots from this app (package prefix)"),
+    Arg("--since", "captured on or after this date (YYYY-MM-DD)"), Arg("--until", "captured on or before (YYYY-MM-DD)"),
+    Arg("--group", "only members of this duplicate group"),
+    Arg("--source-state", "present | held | attached | quarantined | purged"),
+    Arg("--limit", "at most N results", type=int, default=20), Arg("--offset", "skip the first N", type=int, default=0),
+]
+
+
+def _filters(a) -> tuple[str, list]:
+    where, params = ["i.record IS NOT NULL"], []
+    if getattr(a, "category", None):
+        where.append("i.category = ?"); params.append(a.category)
+    if getattr(a, "uncategorized", False):
+        where.append("i.category = 'uncategorized'")
+    if getattr(a, "app", None):
+        where.append("i.source_app LIKE ?"); params.append(a.app + "%")
+    if getattr(a, "since", None):
+        where.append("substr(i.captured_at, 1, 10) >= ?"); params.append(a.since)
+    if getattr(a, "until", None):
+        where.append("substr(i.captured_at, 1, 10) <= ?"); params.append(a.until)
+    if getattr(a, "group", None):
+        where.append("i.group_id = ?"); params.append(a.group)
+    if getattr(a, "source_state", None):
+        where.append("i.source_state = ?"); params.append(a.source_state)
+    if getattr(a, "domain", None):
+        d = a.domain.lower()
+        where.append("EXISTS (SELECT 1 FROM entities e WHERE e.item_id = i.id AND e.kind = 'domain' "
+                     "AND (e.value = ? OR e.value LIKE ?))"); params += [d, "%." + d]
+    return " AND ".join(where), params
+
+
+def _fts_query(q: str) -> str:
+    """User text -> a safe FTS5 query: every word quoted (no operators), all must match."""
+    words = [w for w in re.findall(r"[\w'-]+", q, re.UNICODE) if w]
+    return " ".join('"' + w.replace('"', '') + '"' for w in words)
+
+
+def _hit(r, snippet: str | None, redactions: list) -> dict:
+    text, n = redact(snippet or "")
+    redactions.append(n)
+    return {"id": r["id"], "note": r["note_path"], "category": r["category"], "captured_at": r["captured_at"],
+            "app": r["source_app"], "group": r["group_id"], "rank": r["rank"], "source_state": r["source_state"],
+            "excerpt": text}
+
+
+@command("search", "Full-text search over OCR text, with filters; excerpts are redacted",
+         args=[Arg("query", "words that must all appear (no operators); may be empty with filters", required=False)]
+              + _FILTER_ARGS,
+         details="Matches every word of the query in the OCR text (SQLite FTS5, porter-free, case-insensitive), "
+                 "combined with the filters. Excerpts pass PII redaction before they are returned.")
+def cmd_search(a, state: State):
+    con = state.connect()
+    where, params = _filters(a)
+    q = _fts_query(a.query or "")
+    if q:
+        sql = (f"SELECT i.*, snippet(text_fts, 1, '«', '»', '…', 16) AS snip, bm25(text_fts) AS score "
+               f"FROM text_fts JOIN items i ON i.id = text_fts.id WHERE text_fts MATCH ? AND {where} "
+               f"ORDER BY score LIMIT ? OFFSET ?")
+        rows = con.execute(sql, [q, *params, a.limit, a.offset]).fetchall()
+        total = con.execute(f"SELECT COUNT(*) FROM text_fts JOIN items i ON i.id = text_fts.id "
+                            f"WHERE text_fts MATCH ? AND {where}", [q, *params]).fetchone()[0]
+    else:
+        if where == "i.record IS NOT NULL":
+            raise ToolError("give a query or at least one filter (e.g. --category event)")
+        rows = con.execute(f"SELECT i.*, substr(f.text, 1, 200) AS snip FROM items i JOIN text_fts f ON f.id = i.id "
+                           f"WHERE {where} ORDER BY i.captured_at DESC LIMIT ? OFFSET ?",
+                           [*params, a.limit, a.offset]).fetchall()
+        total = con.execute(f"SELECT COUNT(*) FROM items i WHERE {where}", params).fetchone()[0]
+    reds: list[int] = []
+    hits = [_hit(r, r["snip"], reds) for r in rows]
+    return Result({"query": a.query or "", "total": total, "returned": len(hits), "offset": a.offset,
+                   "redactions": sum(reds), "results": hits})
+
+
+@command("list", "List notes by category or state, newest first; excerpts are redacted",
+         args=[Arg("--uncategorized", "only notes no rule matched (for the calling LLM to tag)", flag=True)]
+              + _FILTER_ARGS)
+def cmd_list(a, state: State):
+    con = state.connect()
+    where, params = _filters(a)
+    rows = con.execute(f"SELECT i.*, substr(f.text, 1, 300) AS snip FROM items i JOIN text_fts f ON f.id = i.id "
+                       f"WHERE {where} ORDER BY i.captured_at DESC LIMIT ? OFFSET ?",
+                       [*params, a.limit, a.offset]).fetchall()
+    total = con.execute(f"SELECT COUNT(*) FROM items i WHERE {where}", params).fetchone()[0]
+    reds: list[int] = []
+    return Result({"total": total, "returned": len(rows), "offset": a.offset,
+                   "results": [_hit(r, r["snip"], reds) for r in rows], "redactions": sum(reds),
+                   "categories": _count(r[0] for r in con.execute("SELECT category FROM items"))})
+
+
+@command("show", "One item in full: text, URLs, QR codes, category, group, image state (redacted)",
+         args=[Arg("id", "item id, id prefix (>= 8 hex) or note filename")])
+def cmd_show(a, state: State):
+    con = state.connect()
+    iid = resolve_id(con, a.id)
+    r = con.execute("SELECT * FROM items WHERE id=?", (iid,)).fetchone()
+    rec = json.loads(r["record"])
+    text, n = redact(_text(con, iid))
+    urls = [{k: u.get(k) for k in ("raw", "url", "verified_by", "corrected", "reason", "flag", "joined")
+             if u.get(k) not in (None, False, 0)} for u in rec["entities"]["urls"]]
+    for u in urls:
+        u["raw"] = redact(u["raw"])[0]
+    return Result({"id": iid, "note": r["note_path"], "text": text, "redactions": n,
+                   "urls": urls, "qr": [redact_qr(q) for q in rec["entities"]["qr"]],
+                   "domains": rec["entities"]["domains"],
+                   "category": r["category"], "decided_by": r["decided_by"], "why": r["why"],
+                   "group": r["group_id"], "rank": r["rank"], "group_size": r["group_size"],
+                   "app": r["source_app"], "captured_at": r["captured_at"], "status": r["status"],
+                   "source_state": r["source_state"], "purge_after": r["purge_after"],
+                   "hold_reason": r["hold_reason"]})
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"\s+", " ", s).strip().lower()
+
+
+@command("tag", "Set a note's category as the calling LLM (or user), grounded by a verbatim quote",
+         args=[Arg("id", "item id, id prefix (>= 8 hex) or note filename"),
+               Arg("--category", "new category: lowercase letters, digits, hyphens", required=True),
+               Arg("--quote", "text copied from the screenshot that justifies the category (required for llm)"),
+               Arg("--by", "llm or user", default="llm")],
+         writes=True,
+         details="An LLM write-back is accepted only if --quote (at least 8 characters) appears verbatim in "
+                 "the OCR text, as returned by show/search (redacted form accepted), ignoring case and "
+                 "whitespace. Otherwise it is rejected with exit 1: invented reasons never reach the vault. "
+                 "The note moves to notes/<category>/ and rules never override it afterwards.")
+def cmd_tag(a, state: State):
+    if a.by not in ("llm", "user"):
+        raise ToolError("--by must be 'llm' or 'user'")
+    if not _CATEGORY.match(a.category or ""):
+        raise ToolError(f"invalid category {a.category!r}: lowercase letters, digits, hyphens, max 31 chars")
+    content = _content_root(state, None, required=True)
+    con = state.connect()
+    iid = resolve_id(con, a.id)
+    raw = _text(con, iid)
+    quote = (a.quote or "").strip()
+    if a.by == "llm" or quote:
+        if len(quote) < 8:
+            raise ToolError("an llm tag needs --quote with at least 8 characters copied from the screenshot text")
+        if _norm(quote) not in _norm(raw) and _norm(quote) not in _norm(redact(raw)[0]):
+            raise ToolError(f"--quote {quote[:60]!r} does not appear in this screenshot's text; "
+                            "copy it verbatim from `show`")
+    row = con.execute("SELECT note_path, category, decided_by FROM items WHERE id=?", (iid,)).fetchone()
+    plan = {"id": iid, "from": {"category": row["category"], "decided_by": row["decided_by"]},
+            "to": {"category": a.category, "decided_by": a.by}, "quote_verified": bool(quote),
+            "note": row["note_path"]}
+    if not a.commit:
+        return Result({"committed": False, **plan})
+    note = content / row["note_path"]
+    if not note.exists():
+        raise ToolError(f"note {row['note_path']} is missing; run reindex or ingest")
+    batch_id = now_iso().replace(":", "-") + "-tag"
+    with state.lock():
+        journal = state.journal(batch_id)
+        updates = {"category": a.category, "decided_by": a.by}
+        if quote:
+            updates["decided_evidence"] = quote
+        note.write_text(set_frontmatter(note.read_text(), updates))
+        journal.append(op="tag", id=iid, path=str(note), category=a.category, by=a.by, quote=quote,
+                       batch_id=batch_id)
+        rer = _rerender(state, con, content, journal, batch_id, {iid})
+        con.commit()
+    new = con.execute("SELECT note_path, category FROM items WHERE id=?", (iid,)).fetchone()
+    return Result({"committed": True, **plan, "note": new["note_path"], "notes_rewritten": rer["notes_written"],
+                   "conflicts": rer["conflicts"]}, violation=bool(rer["conflicts"]))

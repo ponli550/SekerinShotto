@@ -155,6 +155,25 @@ failure: {command, ok, version, data | error}. `ok` true carries `data`,
 Any command that writes (`writes: true` in the schema) reports what it would do
 and changes nothing unless `--commit` is passed. Read the plan, then commit.
 
+## Reading and acting on notes
+
+    sekerinshotto search "hackathon" --category event --json   every word must match
+    sekerinshotto list --uncategorized --json                  your tagging queue
+    sekerinshotto show <id> --json                             one item in full
+    sekerinshotto tag <id> --category event --quote "<words copied from show>" --commit --json
+
+Text you receive is PII-redacted ([NAME], [IC], [EMAIL], [PHONE], [PAYMENT QR]). A `tag` must quote the
+screenshot's text verbatim (redacted form is fine); an invented or paraphrased reason is rejected with
+exit 1. Your category is then final: rules never override it. Ids can be the full id, a prefix of at
+least 8 hex characters, or the note filename.
+
+## Images
+
+`cleanup --commit` moves images: quarantine (deleted exactly 7 days later by `purge --commit`),
+attachments (photos, kept), or held (failed or unverified URL; kept and retried). `confirm <id>` vouches
+for a held image; `keep <id>` saves a diagram the visual rule missed. The user never reviews images, so
+say what you did; AUDIT.md in the vault lists every held image.
+
 ## Trust rules
 
 - URLs carry `verified_by`: `qr` means decoded from a QR code (exact);
