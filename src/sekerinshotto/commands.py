@@ -1208,3 +1208,34 @@ def _quarantine_copies(state: State, con, journal, batch_id: str, only: set[str]
             _save(con, rec, copies=cs)
             changed.add(rec["id"])
     return changed
+
+
+# ---------------------------------------------------------------- config
+from .state import DEFAULT_STATE, config_path, configured_state, resolve_state  # noqa: E402
+
+
+@command("config show", "Which state folder is active, and why")
+def cmd_config_show(a, state: State):
+    env = os.environ.get("SEKERINSHOTTO_STATE")
+    source = "--state" if a.state else "SEKERINSHOTTO_STATE" if env else "config" if configured_state() else "default"
+    return Result({"active_state": str(state.root), "source": source, "config_file": str(config_path()),
+                   "configured_state": configured_state(), "default_state": str(Path(DEFAULT_STATE).expanduser()),
+                   "initialised": state.exists, "content_root": str(state.bound_content() or "") or None})
+
+
+@command("config use-state", "Make a state folder the default for every command and panel",
+         args=[Arg("path", "the state folder to use (it may not exist yet)")],
+         writes=True,
+         details="Writes ~/.config/sekerinshotto/config.json. Panels run without --state, so this is how they "
+                 "follow a state folder other than the default. --state and $SEKERINSHOTTO_STATE still win.")
+def cmd_config_use_state(a, state: State):
+    target = resolve_state(a.path)                          # same synced-folder guard as everywhere else
+    info = {"path": str(target), "exists": (target / "index.sqlite").exists(), "previous": configured_state()}
+    if not a.commit:
+        return Result({"committed": False, **info})
+    f = config_path()
+    f.parent.mkdir(parents=True, exist_ok=True)
+    cfg = json.loads(f.read_text()) if f.exists() else {}
+    cfg["state"] = str(target)
+    f.write_text(json.dumps(cfg, indent=1) + "\n")
+    return Result({"committed": True, **info, "config_file": str(f)})
