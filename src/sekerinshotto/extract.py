@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
-EXTRACTOR_VERSION = "4"
+EXTRACTOR_VERSION = "5"
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".heic", ".webp", ".tif", ".tiff", ".bmp", ".gif"}
 
 FAIL_MIN_CHARS = 3            # fewer chars and no barcode -> failed/no_text
@@ -243,13 +243,30 @@ def jaccard_est(a: list[int], b: list[int]) -> float:
     return sum(x == y for x, y in zip(a, b)) / len(a)
 
 
+def visual_metrics(path: Path, lines) -> tuple[float, int, float]:
+    """(text coverage, gray levels, edge share) of the content area. Photos and camera frames have
+    little text and rich pixels; their meaning is in the image, which OCR cannot keep."""
+    from PIL import Image, ImageFilter
+    content = [l for l in lines if len(l) > 2 and CHROME_TOP <= l[2][1] <= CHROME_BOTTOM]
+    cov = sum(l[2][2] * l[2][3] for l in content) / (CHROME_BOTTOM - CHROME_TOP)
+    try:
+        with Image.open(path) as im:
+            g = im.crop((0, int(im.height * CHROME_TOP), im.width, int(im.height * CHROME_BOTTOM)))
+            g = g.convert("L").resize((300, 600))
+            edges = sum(1 for p in g.filter(ImageFilter.FIND_EDGES).tobytes() if p > 40) / (300 * 600)
+            grays = len(set(g.resize((60, 120)).tobytes()))
+    except Exception:  # noqa: BLE001
+        return round(cov, 4), 0, 0.0
+    return round(cov, 4), grays, round(edges, 4)
+
+
 def dhash_of(path: Path) -> str | None:
     from PIL import Image
     try:
         with Image.open(path) as im:
             w, h = im.size
             im = im.crop((0, int(h * CHROME_TOP), w, int(h * CHROME_BOTTOM))).convert("L").resize((9, 8))
-            px = list(im.getdata())
+            px = list(im.tobytes())
     except Exception:  # noqa: BLE001 - a fingerprint is optional
         return None
     bits = 0
@@ -286,6 +303,20 @@ class Extraction:
     content_tokens: int = 0
     dhash: str | None = None                          # 64-bit difference hash of the content region
     extractor_version: str = EXTRACTOR_VERSION        # kept from the record when a note is re-rendered
+    text_coverage: float = 0.0                        # share of the content area covered by text boxes
+    grays: int = 0                                    # distinct gray levels in a 60x120 thumbnail
+    edges: float = 0.0                                # share of strong-edge pixels
+    # lifecycle (FORMAT §6); set by cleanup, carried through re-renders
+    source_state: str = "present"
+    stored_path: str | None = None
+    quarantined_at: str | None = None
+    purge_after: str | None = None
+    purged_at: str | None = None
+    attachment: str | None = None
+    hold_reason: str | None = None
+    attempts: int = 0
+    keep: bool = False
+    confirmed_by: str | None = None
     elapsed_ms: int = 0
 
     @property
@@ -409,6 +440,7 @@ def _extract(path: Path, file_id: str | None = None) -> Extraction:
 
     ex.toks = token_hashes(content_tokens(ex.lines))
     ex.content_tokens, ex.sig, ex.dhash = len(ex.toks), minhash(ex.toks), dhash_of(path)
+    ex.text_coverage, ex.grays, ex.edges = visual_metrics(path, ex.lines)
 
     chars = sum(len(t[0]) for t in ex.lines)
     if chars:

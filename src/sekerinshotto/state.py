@@ -14,7 +14,7 @@ from pathlib import Path
 
 from .contract import ToolError
 
-DB_SCHEMA_VERSION = 2
+DB_SCHEMA_VERSION = 3
 SUBDIRS = ("inbox", "held", "quarantine", "batches", "journal", "audit")
 
 # Sync engines copy index.sqlite, -wal and -shm separately and corrupt it.
@@ -23,7 +23,20 @@ _SYNCED_MARKERS = ("/Library/Mobile Documents/", "/Library/CloudStorage/",
 
 
 def now_iso() -> str:
+    # SEKERINSHOTTO_NOW pins the clock (tests of the 7-day quarantine); never set it in normal use
+    pinned = os.environ.get("SEKERINSHOTTO_NOW")
+    if pinned:
+        return pinned
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_iso(ts: str) -> datetime:
+    return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+
+
+def plus_seconds(ts: str, seconds: int) -> str:
+    from datetime import timedelta
+    return (parse_iso(ts) + timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def resolve_state(arg: str | None) -> Path:
@@ -173,7 +186,9 @@ def _migrate(con: sqlite3.Connection) -> None:
     """)
     have = {r[1] for r in con.execute("PRAGMA table_info(items)")}
     for col, typ in (("record", "TEXT"), ("category", "TEXT"), ("decided_by", "TEXT"), ("why", "TEXT"),
-                     ("group_id", "TEXT"), ("rank", "INTEGER"), ("group_size", "INTEGER")):
+                     ("group_id", "TEXT"), ("rank", "INTEGER"), ("group_size", "INTEGER"),
+                     ("stored_path", "TEXT"), ("purge_after", "TEXT"), ("hold_reason", "TEXT"),
+                     ("attempts", "INTEGER"), ("keep", "INTEGER"), ("confirmed_by", "TEXT")):
         if col not in have:                                    # additive migration, v1 -> v2
             con.execute(f"ALTER TABLE items ADD COLUMN {col} {typ}")
     con.execute("CREATE INDEX IF NOT EXISTS items_group ON items(group_id)")

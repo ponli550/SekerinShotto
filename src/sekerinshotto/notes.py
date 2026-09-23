@@ -14,7 +14,7 @@ USER_TAIL = "\n\n## Notes\n\n"
 
 OWNED_KEYS = ["id", "ingester", "ingester_version", "source_type", "source_app", "captured_at",
               "ingested", "status", "status_reason", "category", "decided_by", "urls", "urls_unverified", "urls_corrected", "domains",
-              "qr", "group", "rank", "group_size", "members", "tags"]
+              "qr", "group", "rank", "group_size", "members", "source_state", "purge_after", "tags"]
 WRITEBACK_KEYS = ("category", "decided_by")      # kept when a caller (llm/user/laya) decided them
 WRITEBACK_BY = ("llm", "user", "laya")
 _SKIP_PKG = {"com", "org", "net", "my", "io", "co", "app", "android"}
@@ -86,7 +86,10 @@ def _linkable(u: dict) -> bool:
 
 
 def generated_body(ex: Extraction, org: dict | None = None) -> str:
-    out = [START, "## Text", _fence(ex.text) if ex.text.strip() else "_no text read_"]
+    out = [START]
+    if ex.attachment:
+        out.append(f"![[{ex.attachment}]]")                  # visual: the image is the content
+    out += ["## Text", _fence(ex.text) if ex.text.strip() else "_no text read_"]
     if ex.urls:
         out.append("## Links")
         for u in ex.urls:
@@ -127,6 +130,13 @@ def generated_body(ex: Extraction, org: dict | None = None) -> str:
     src.append(f"- size: {ex.width}×{ex.height}, {ex.bytes // 1024} KB")
     if ex.status != "ok":
         src.append(f"- **status: {ex.status}** ({ex.status_reason})")
+    src.append("- image: " + {
+        "present": "at its source, not yet cleaned up",
+        "quarantined": f"quarantined, purged after {ex.purge_after} UTC",
+        "attached": "kept in the vault (visual)",
+        "held": f"held — {ex.hold_reason}; retried automatically, never auto-deleted",
+        "purged": f"purged at {ex.purged_at}; this note is the only record",
+    }.get(ex.source_state, ex.source_state))
     out.append("\n".join(src))
     out.append(END)
     return "\n\n".join(out)
@@ -146,7 +156,9 @@ def render(ex: Extraction, ingested: str, existing: str | None = None, org: dict
         "urls_corrected": [f"{u['raw']} -> {u['url']}" for u in ex.urls if u.get("corrected")],
         "domains": ex.domains,
         "qr": sorted({b["type"] for b in ex.barcodes}),
-        "tags": ["sekerinshotto"] + ([f"sekerinshotto/{ex.status}"] if ex.status != "ok" else []),
+        "source_state": ex.source_state, "purge_after": ex.purge_after,
+        "tags": ["sekerinshotto"] + ([f"sekerinshotto/{ex.status}"] if ex.status != "ok" else [])
+                + ([f"sekerinshotto/{ex.source_state}"] if ex.source_state in ("held", "attached") else []),
     }
     foreign: list[str] = []
     user_part = USER_TAIL
@@ -171,13 +183,13 @@ def text_from_note(text: str) -> str:
     return m.group(2) if m else ""
 
 
-def manifest_record(ex: Extraction, batch_id: str, note_path: str, source_state: str = "present",
+def manifest_record(ex: Extraction, batch_id: str, note_path: str, source_state: str | None = None,
                     org: dict | None = None) -> dict:
     org = org or {"category": "uncategorized", "decided_by": None}
     return {
         "format": "shared-note/0.1", "id": ex.id, "ingester": "sekerinshotto",
         "ingester_version": __version__, "batch_id": batch_id, "source_type": "image",
-        "source_path": str(ex.path), "source_state": source_state, "note_path": note_path,
+        "source_path": str(ex.path), "source_state": source_state or ex.source_state, "note_path": note_path,
         "source_app": ex.source_app, "captured_at": ex.captured_at,
         "category": org["category"], "decided_by": org.get("decided_by"), "why": org.get("why"),
         "group": org.get("group"), "rank": org.get("rank"), "group_size": org.get("size"),
@@ -187,7 +199,13 @@ def manifest_record(ex: Extraction, batch_id: str, note_path: str, source_state:
         "width": ex.width, "height": ex.height, "bytes": ex.bytes,
         "sig": ex.sig, "toks": ex.toks, "dhash": ex.dhash, "content_tokens": ex.content_tokens,
         "extractor_version": ex.extractor_version,
+        "text_coverage": ex.text_coverage, "grays": ex.grays, "edges": ex.edges,
+        **{k: getattr(ex, k) for k in LIFECYCLE},
     }
+
+
+LIFECYCLE = ("stored_path", "quarantined_at", "purge_after", "purged_at", "attachment", "hold_reason",
+             "attempts", "keep", "confirmed_by")
 
 
 def ex_version() -> str:
@@ -207,6 +225,11 @@ def extraction_from_record(rec: dict, text: str) -> Extraction:
     ex.ocr_confidence = rec.get("ocr_confidence")
     ex.sig, ex.dhash, ex.content_tokens = rec.get("sig") or [], rec.get("dhash"), rec.get("content_tokens") or 0
     ex.toks = rec.get("toks") or []
+    ex.text_coverage, ex.grays, ex.edges = rec.get("text_coverage") or 0.0, rec.get("grays") or 0, rec.get("edges") or 0.0
+    ex.source_state = rec.get("source_state") or "present"
+    for k in LIFECYCLE:
+        if rec.get(k) is not None:
+            setattr(ex, k, rec[k])
     ex.extractor_version = rec.get("extractor_version") or ex_version()
     return ex
 

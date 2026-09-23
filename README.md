@@ -20,6 +20,9 @@ uv run sekerinshotto domains update --commit            # once: reference lists 
 uv run sekerinshotto ingest ~/Screenshots --json        # plan: what would be extracted
 uv run sekerinshotto ingest ~/Screenshots --commit      # extract and write notes
 uv run sekerinshotto organize --commit                  # re-apply rules/groups after editing rules.toml
+uv run sekerinshotto cleanup --commit                   # route images: quarantine / attachments / held
+uv run sekerinshotto purge --commit                     # delete quarantined images whose 7 days are up
+uv run sekerinshotto retry --commit                     # re-extract held images
 uv run sekerinshotto status
 uv run sekerinshotto reindex --commit                   # rebuild the index from manifests + notes
 ```
@@ -32,6 +35,11 @@ Notes are sorted into `notes/<category>/` by explainable rules (English and Mala
 and screenshots with the same content — a crop, a re-screenshot, the same page in a viewer — are grouped
 with a hub note in `groups/`, ranked so rank 1 is the most complete copy. Edit `<state>/rules.toml` to change
 the rules; categories set by an LLM or by you are never overridden.
+
+After extraction the images themselves are not kept: `cleanup` quarantines them for exactly 7 days, then
+`purge` deletes them. Photos and other visual images are kept in the vault as attachments; images that could
+not be read reliably are held and retried. You never review images; `AUDIT.md` lists what was held and why.
+`restore` brings a quarantined image back; `keep` saves a diagram the visual rule missed.
 
 State (index, manifests, signed journal) lives in `~/.local/share/sekerinshotto/`, outside any vault and
 never in a synced folder. Rerunning `ingest` skips images already extracted with the current extractor.
