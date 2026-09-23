@@ -433,7 +433,8 @@ A note named `undated-…` is renamed once when it gains a date (journal `move`)
 `added_at` is set on first insert and never updated (backfilled from the earliest batch for older rows);
 the home panel lists recently added notes by it. `add` prints each created note's path.
 
-Adding photos from a panel: `A` opens a drop zone (after a typed `yes`): `dropzone --commit` opens
+Adding photos from a panel: `A` runs `dropzone --ask`: Finder opens, and the first answer is the consent —
+`yes` starts the zone, photos dropped onto the pane add them and start it, anything else cancels. Then `dropzone --commit` opens
 `<state>/inbox` in Finder (frontmost) and runs in the side pane until `q`. Files that land in the inbox
 are extracted automatically; paths dragged onto the pane (a terminal pastes them shell-escaped) are copied
 into the inbox and extracted; each new note is printed. Finder MOVES files dragged between folders on the

@@ -285,8 +285,8 @@ def keys_for(name: str) -> str:
          "# no key passes --commit on its own.", "[global]"] + _nav()
     g += ["s\tsearch → results board (on top)\tinput:search: |term|sekerinshotto panel set '{input}' && panvim popup ss-results",
           "w\twhere things stand (status)\tterm-hold\tsekerinshotto status",
-          "A\tADD photos: drop zone — Finder inbox + auto-extract until q (confirm first)\tterm-side\t"
-          + CONFIRM.format(cmd="dropzone", word="yes"),
+          "A\tADD photos: drop zone — Finder inbox + auto-extract until q (yes or a drop starts it)\t"
+          "term-side\tsekerinshotto dropzone --ask",
           "I\tINGEST the inbox (plan, then confirm)\tterm-hold\t" + CONFIRM.format(cmd="ingest", word="yes"),
           "C\tCLEANUP: route images (plan, then confirm)\tterm-hold\t" + CONFIRM.format(cmd="cleanup", word="yes"),
           "O\tORGANIZE: re-apply rules (plan, then confirm)\tterm-hold\t" + CONFIRM.format(cmd="organize", word="yes"),

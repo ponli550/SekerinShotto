@@ -1382,7 +1382,9 @@ def cmd_add(a, state: State):
 # ---------------------------------------------------------------- drop zone
 @command("dropzone", "Open the inbox in Finder and auto-extract whatever lands in it, until you type q",
          args=[Arg("--interval", "seconds between inbox checks", type=int, default=2),
-               Arg("--no-finder", "do not open the Finder window", flag=True)],
+               Arg("--no-finder", "do not open the Finder window", flag=True),
+               Arg("--ask", "ask first (the panel's A key): yes starts; dropping photos adds them and starts",
+                   flag=True)],
          writes=True,
          details="Plan: says what it will do. Commit: opens <state>/inbox in Finder (frontmost), then loops: "
                  "new files in the inbox are extracted; a line of paths typed or dropped onto this terminal is "
@@ -1401,6 +1403,26 @@ def cmd_dropzone(a, state: State):
         # Opening a folder changes nothing, so the plan step does it right away: the window is there
         # before the "type yes" question, and drops made now simply wait in the inbox.
         subprocess.run(["open", str(inbox)], check=False)             # Finder comes to the front
+    first_drop: list[Path] = []
+    if a.ask and not a.commit:
+        # The panel's A key. The first answer is the consent: `yes`, or photos dropped onto this pane
+        # (a terminal pastes their paths) -- dropping a photo here is the natural first move, and it
+        # used to land in a yes/no prompt as a "no".
+        sys.stdout.write(f"Finder is open on the inbox: {inbox}\n\n"
+                         "Drop photos onto this pane (then Enter) to add them and start the drop zone,\n"
+                         "or type yes + Enter to start it empty. Anything else cancels. If typing does\n"
+                         "nothing, press i in this pane first.\n\n> ")
+        sys.stdout.flush()
+        answer = sys.stdin.readline().strip()
+        if answer.lower() != "yes":
+            try:
+                first_drop, skipped = _expand(shlex.split(answer)) if answer else ([], [])
+            except ValueError:
+                first_drop, skipped = [], [answer]
+            if not first_drop:
+                sys.stdout.write("cancelled" + (f" (no images in: {answer[:80]})" if answer else "") + "\n")
+                return Result({"committed": False, "cancelled": True}, human="")
+        a.commit = True
     if not a.commit:
         return Result({"committed": False, "inbox": str(inbox), "content_root": str(content)},
                       human=f"Finder is open on the inbox: {inbox}\n"
@@ -1436,6 +1458,9 @@ def cmd_dropzone(a, state: State):
 
     for p in pending():                                        # what is already there counts as seen
         seen.add((p.name, p.stat().st_mtime))
+    for f in first_drop:                                       # photos dropped at the question
+        if not (inbox / f.name).exists():
+            shutil.copy2(f, inbox / f.name)
     try:
         while True:
             ready, _, _ = select.select([sys.stdin], [], [], max(1, a.interval))
