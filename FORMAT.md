@@ -5,7 +5,7 @@ vault wrapper manages an Obsidian vault. Neither imports the other. They meet
 only at the files and the JSON described here. Any future ingester (PDF, web
 clip, …) that writes this format plugs into the same wrapper.
 
-Status: draft v0.10.0 — 2026-09-23.
+Status: draft v0.11.0 — 2026-09-23.
 
 ## 1. CLI contract (both tools)
 
@@ -162,7 +162,7 @@ Ownership:
 | Know that Obsidian exists | ✘ | ✔ |
 | Reconcile moved/renamed notes (by `id`) | — | ✔ |
 | Orphans, broken links, search | — | ✔ |
-| Uncategorized → LLM → `category` write-back | — | ✔ (edits frontmatter, sets `decided_by: llm`) |
+| Uncategorized → LLM → `category` write-back | ✔ `tag` (quote-grounded) | ✔ may do the same by editing frontmatter |
 
 The wrapper should reuse `ov` or the official Obsidian CLI where they already cover a row.
 
@@ -318,15 +318,30 @@ extracted and tidied, as a tool the calling LLM uses directly over the finished 
   `decided_by: laya` (or `llm`), and the note records `model_rev`.
 - Optional install; if missing, the query commands exit `1` with a clear reason. Nothing else depends on it.
 
-## 7a. Redaction — at the LLM boundary only (decided 2026-09-23)
+## 7a. Redaction and text commands (implemented)
 
 - Notes, manifests and the index keep full text. The vault is the user's own memory.
-- Anything leaving the tool toward a calling LLM is redacted: `--json` output that carries OCR text,
-  QR payloads or excerpts (search, show, list-uncategorized, Laya results). Scrubbed: NRIC (with YYMMDD
-  check), names (honorific, "Prepared by" cue, bin/binti/a/l/a/p), email, Malaysian phone, payment QR
-  names and account fields. Ported from VeriPay `redact()`; known gap: bare names with no cue.
-- Wi-Fi QR passwords are the exception: redacted before anything is written, everywhere.
-- Phase 1 emits no text-bearing JSON, so the redaction module lands with the first command that does.
+- Every command that returns text toward a calling LLM redacts it first: `search` and `list` excerpts,
+  `show` text, URL raw readings and QR payloads. Scrubbed: NRIC (only with a plausible YYMMDD), names
+  (honorific, "Prepared by" cue, capitalised words around bin/binti/a/l/a/p, at most 4 each side), email,
+  Malaysian phone numbers including `+60 12-…`, and payment QR payloads (replaced whole; merchant name →
+  `[NAME]`). Ported from VeriPay `redact()`, with the patronymic rule bounded so it no longer swallows the
+  rest of an OCR line. Known gaps: a bare name with no cue, an all-lowercase name in a chat.
+- Wi-Fi QR passwords are redacted before anything is written, everywhere.
+- Redaction is a boundary, not a vault guarantee: an LLM that reads the note files directly sees full text.
+
+Commands:
+- `search [QUERY] [filters]` — every word must match (SQLite FTS5; operators neutralised), plus filters
+  `--category --domain --app --since --until --group --source-state --limit --offset`. Excerpts mark
+  matches with «…».
+- `list [--uncategorized] [filters]` — newest first; the uncategorized list is the LLM's tagging queue.
+- `show ID` — one item: text, URLs with `verified_by` and correction reasons, QR, category and reason,
+  group and rank, image state.
+- `tag ID --category C --quote Q [--by llm|user] --commit` — a caller's category. For `llm`, `--quote`
+  (≥ 8 chars) must appear verbatim in the OCR text, raw or redacted, ignoring case and whitespace; else
+  exit 1. The quote is stored as `decided_evidence`, the note moves to `notes/C/`, and rules never
+  override it. Grounding pattern adapted from VeriPay `_fact_in_source()`.
+- IDs everywhere accept a full id, a ≥ 8-hex prefix, or a note filename; ambiguity is an error.
 
 ## 8. Panels (human surface, via panvim)
 

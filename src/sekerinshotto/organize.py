@@ -111,7 +111,9 @@ def organize(items: dict[str, dict], rules, content: Path) -> dict[str, dict]:
         if note and note.exists():
             fm = read_frontmatter(note.read_text())
             if fm.get("decided_by") in WRITEBACK_BY:              # a caller decided; never override
-                cat, by, why = fm.get("category"), fm["decided_by"], f"set by {fm['decided_by']}"
+                ev = fm.get("decided_evidence")
+                cat, by = fm.get("category"), fm["decided_by"]
+                why = f"set by {by}" + (f", quoting {ev!r}" if ev else "")
         if cat is None:
             qr_types = {b["type"] for b in rec["entities"]["qr"]}
             cat, why = classify(rules, rec.get("source_app"), qr_types, rec["entities"]["domains"], rec.get("_text", ""))

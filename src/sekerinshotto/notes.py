@@ -14,8 +14,9 @@ USER_TAIL = "\n\n## Notes\n\n"
 
 OWNED_KEYS = ["id", "ingester", "ingester_version", "source_type", "source_app", "captured_at",
               "ingested", "status", "status_reason", "category", "decided_by", "urls", "urls_unverified", "urls_corrected", "domains",
-              "qr", "group", "rank", "group_size", "members", "source_state", "purge_after", "tags"]
-WRITEBACK_KEYS = ("category", "decided_by")      # kept when a caller (llm/user/laya) decided them
+              "qr", "group", "rank", "group_size", "members", "source_state", "purge_after", "decided_evidence",
+              "tags"]
+WRITEBACK_KEYS = ("category", "decided_by", "decided_evidence")   # kept when a caller decided them
 WRITEBACK_BY = ("llm", "user", "laya")
 _SKIP_PKG = {"com", "org", "net", "my", "io", "co", "app", "android"}
 
@@ -38,6 +39,20 @@ def note_filename(ex: Extraction) -> str:
 
 def note_relpath(ex: Extraction, category: str = "uncategorized") -> str:
     return f"notes/{category}/{note_filename(ex)}"
+
+
+def set_frontmatter(text: str, updates: dict) -> str:
+    """Rewrite (or add) top-level frontmatter keys, leaving every other block untouched."""
+    blocks, body = _split(text)
+    seen, out = set(), []
+    for k, raw in blocks:
+        if k in updates:
+            out.append(f"{k}: {_y(updates[k])}")
+            seen.add(k)
+        else:
+            out.append(raw)
+    out += [f"{k}: {_y(v)}" for k, v in updates.items() if k not in seen]
+    return "---\n" + "\n".join(out) + "\n---\n" + body
 
 
 def read_frontmatter(text: str) -> dict:
