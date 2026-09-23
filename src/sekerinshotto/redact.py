@@ -14,7 +14,24 @@ import re
 EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
 MY_IC_RE = re.compile(r"\b\d{6}-\d{2}-\d{4}\b")
 # VeriPay's pattern plus a separator after the country code ("+60 12-256 7486"), common on WhatsApp.
-PHONE_RE = re.compile(r"(?<!\d)(?:\+?60[-\s]?|0)1\d[-\s]?\d{3,4}[-\s]?\d{3,4}(?!\d)")
+# Full numbers, and numbers cut off on screen ("+6017-483 56..."): a partial number still identifies someone.
+PHONE_RE = re.compile(r"(?<!\d)(?:\+?60[-\s]?|0)1\d[-\s]?\d{3,4}(?:[-\s]?\d{1,4})?(?:\.{2,}|…)?(?!\d)")
+
+# Addresses and locations. Conservative-but-broad: over-redacting an excerpt costs little (the vault keeps
+# the full text); leaking a home address does not.
+ADDR_CUE_RE = re.compile(r"\b(Alamat|Address|Addr)\s*[:\-]\s*\S.*$", re.IGNORECASE)
+STREET_RE = re.compile(
+    r"\b(?:No\.?\s*\d+[A-Za-z]?,?\s*)?(?:Jalan|Jln|Lorong|Lrg|Persiaran|Taman|Tmn|Kampung|Kg|Blok|Block|Lebuh|Presint)"
+    r"\.?\s+(?:[A-Z0-9][\w/'.-]*)(?:[ ,]+[A-Z0-9][\w/'.-]*)*")
+POSTCODE_RE = re.compile(r"\b\d{5},?\s+[A-Z][A-Za-z]+(?:[ ,]+[A-Z][A-Za-z]+)*")
+GPS_RE = re.compile(r"\b(?:LAT|LNG|LON|LONG|Latitude|Longitude)\s*[:=]\s*-?\d{1,3}\.\d{3,}"
+                    r"|(?<![\d.])-?\d{1,2}\.\d{4,},\s*-?\d{1,3}\.\d{4,}(?![\d.])", re.IGNORECASE)
+
+MY_STATES = ("Johor|Kedah|Kelantan|Melaka|Malacca|Negeri Sembilan|Pahang|Perak|Perlis|Pulau Pinang|Penang|Sabah|"
+             "Sarawak|Selangor|Terengganu|Kuala Lumpur|Putrajaya|Labuan|Wilayah Persekutuan")
+ADDR_CONT_RE = re.compile(rf"\b\d{{5}}\b|\b(?:{MY_STATES})\b")
+ADDR_STOP_RE = re.compile(r"(?i)^\s*(nama|name|tel|phone|no\.?\s*tel|email|total|jumlah)\b|\d{1,2}:\d{2}")
+ADDR_MAX_CONT = 3
 
 KNOWN_NAMES = [n.strip() for n in os.environ.get("SEKERINSHOTTO_KNOWN_NAMES", "").split(",") if n.strip()]
 _NAME_WORD = r"[A-Z][\w'.@-]*"
@@ -45,9 +62,19 @@ def redact(text: str) -> tuple[str, int]:
     if not text:
         return text, 0
     out, count = [], 0
+    cont_left, prev_comma = 0, False
     for line in text.split("\n"):
-        line, n = _redact_line(line)
-        out.append(line)
+        red, n = _redact_line(line)
+        if "[ADDRESS]" in red:
+            cont_left, prev_comma = ADDR_MAX_CONT, red.rstrip().endswith(",")
+        elif cont_left and line.strip() and not ADDR_STOP_RE.search(line) and (
+                ADDR_CONT_RE.search(line) or prev_comma):
+            # an address that wraps onto the next lines ("3/4, Bandar Bertam Putra, 13200" / "Kepala Batas, ...")
+            red, n, cont_left = "[ADDRESS]", n + 1, cont_left - 1
+            prev_comma = line.rstrip().endswith(",")
+        else:
+            cont_left = 0
+        out.append(red)
         count += n
     return "\n".join(out), count
 
@@ -73,8 +100,13 @@ def _redact_line(text: str) -> tuple[str, int]:
         return m.group(0)
     text = MY_IC_RE.sub(_ic, text)
     count += hits
-    for pattern, token in ((EMAIL_RE, "[EMAIL]"), (PHONE_RE, "[PHONE]")):
+    for pattern, token in ((EMAIL_RE, "[EMAIL]"), (PHONE_RE, "[PHONE]"), (GPS_RE, "[LOCATION]")):
         text, n = pattern.subn(token, text)
+        count += n
+    text, n = ADDR_CUE_RE.subn(lambda m: m.group(1) + ": [ADDRESS]", text)
+    count += n
+    for pattern in (STREET_RE, POSTCODE_RE):
+        text, n = pattern.subn("[ADDRESS]", text)
         count += n
     return text, count
 

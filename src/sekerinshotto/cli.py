@@ -70,7 +70,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as e:  # noqa: BLE001 - the contract promises an envelope even on a bug
         emit(envelope(path, error=f"internal error: {type(e).__name__}: {e}"), as_json)
         return EXIT_ERROR
-    emit(envelope(name, data=res.data), as_json)
+    emit(envelope(name, data=res.data), as_json, res.human)
     return EXIT_VIOLATION if res.violation else EXIT_OK
 
 

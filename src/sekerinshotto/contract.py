@@ -32,6 +32,7 @@ class ToolError(Exception):
 class Result:
     data: dict
     violation: bool = False
+    human: str | None = None       # readable form for a terminal/panel; --json always gets `data`
 
 
 @dataclass
@@ -92,12 +93,15 @@ def envelope(command_path: str, *, data: dict | None = None, error: str | None =
     return env
 
 
-def emit(env: dict, as_json: bool) -> None:
+def emit(env: dict, as_json: bool, human: str | None = None) -> None:
     if as_json:
         sys.stdout.write(json.dumps(env, ensure_ascii=False, sort_keys=False) + "\n")
         return
     if not env["ok"]:
         sys.stderr.write(f"error: {env['error']}\n")
+        return
+    if human is not None:
+        sys.stdout.write(human)
         return
     if isinstance(env["data"], dict) and "_text" in env["data"]:
         sys.stdout.write(env["data"]["_text"])            # panels: plain text for panvim

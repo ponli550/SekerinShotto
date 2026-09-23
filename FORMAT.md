@@ -5,7 +5,7 @@ vault wrapper manages an Obsidian vault. Neither imports the other. They meet
 only at the files and the JSON described here. Any future ingester (PDF, web
 clip, …) that writes this format plugs into the same wrapper.
 
-Status: draft v0.18.0 — 2026-09-23.
+Status: draft v0.19.0 — 2026-09-23.
 
 ## 1. CLI contract (both tools)
 
@@ -372,8 +372,14 @@ took 12 s; the same question again came from cache in 0 s). Raw long text was ~1
   `show` text, URL raw readings and QR payloads. Scrubbed: NRIC (only with a plausible YYMMDD), names
   (honorific, "Prepared by" cue, capitalised words around bin/binti/a/l/a/p, at most 4 each side), email,
   Malaysian phone numbers including `+60 12-…`, and payment QR payloads (replaced whole; merchant name →
-  `[NAME]`). Ported from VeriPay `redact()`, with the patronymic rule bounded so it no longer swallows the
-  rest of an OCR line. Known gaps: a bare name with no cue, an all-lowercase name in a chat.
+  `[NAME]`), phone numbers cut off on screen (`+6017-483 56...`), addresses (`Alamat:`/`Address:` cues,
+  capitalised Jalan/Taman/Persiaran/Blok… + name or number, postcode + place, and up to 3 wrapped
+  continuation lines holding a postcode or a state, or following a trailing comma) and coordinates
+  (`LAT:`/`LNG:` and bare lat,lng pairs) → `[ADDRESS]` / `[LOCATION]`. Ported from VeriPay `redact()`,
+  with the patronymic rule bounded so it no longer swallows the rest of an OCR line. Sweep of the
+  182-screenshot trial: 28 phones, 26 names, 22 address lines, 16 emails, 2 locations redacted; 0 residual
+  phone, email, IC, street or postcode+state lines. Known gaps: a bare name with no cue, an all-lowercase
+  name in a chat, an address with no cue, street word or postcode.
 - Wi-Fi QR passwords are redacted before anything is written, everywhere.
 - Redaction is a boundary, not a vault guarantee: an LLM that reads the note files directly sees full text.
 
@@ -403,6 +409,11 @@ Render contract (`sekerinshotto panel <view>`):
   (a panel stays on screen, screen shares included). Text is behind a key, redacted.
 - Row lines start with two spaces and an id; `--row '^  (%S+)'`. `panel path ID` and `panel image ID`
   print paths for keys that open a note or an image.
+
+Side-pane keys that only print (`list`, `search`, `show`) are piped into `less -R`: panvim's `term-side`
+closes its pane when the command exits, which made them flash and vanish. Titles are `[A-Za-z0-9_-]+`
+(`panvim new` writes them unquoted and `panvim audit` only matches that form); `panels install` repairs
+older wrappers and syncs the registry title column of `ss*` rows only.
 
 Keys follow pan's convention: lowercase = read-only; UPPERCASE runs the plan, then asks the user to type
 `yes` (`purge` for purge) before committing. No key passes `--commit` on its own; a test enforces it.
