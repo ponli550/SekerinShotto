@@ -89,14 +89,24 @@ def cmd_ingest(a, state: State):
 
     t0 = time.perf_counter()
     todo, skipped, dup_in_batch, seen = [], 0, 0, set()
+    copies: dict[str, list[Path]] = {}
     for p in iter_images(src, a.limit):
         fid = sha256_file(p)
         if fid in seen:
             dup_in_batch += 1
+            copies.setdefault(fid, []).append(p)
             continue
         seen.add(fid)
-        row = con.execute("SELECT extractor_version, note_path, source_state FROM items WHERE id=?",
+        row = con.execute("SELECT extractor_version, note_path, source_state, record FROM items WHERE id=?",
                           (fid,)).fetchone()
+        if row and row["record"]:
+            prev = json.loads(row["record"])
+            here = prev.get("stored_path") if prev.get("source_state") != "present" else prev.get("source_path")
+            if not here or Path(here).resolve() != p.resolve():
+                copies.setdefault(fid, []).append(p)      # the same bytes at another path
+                if row["source_state"] == "present":
+                    skipped += 1
+                    continue
         if row and row["source_state"] != "present":
             skipped += 1                      # already routed by cleanup (held/quarantined/attached/purged)
             continue
@@ -108,6 +118,7 @@ def cmd_ingest(a, state: State):
     plan = {"source": str(src), "content_root": str(content), "state": str(state.root),
             "planned": len(todo), "skipped_already_extracted": skipped,
             "duplicates_in_batch": dup_in_batch,
+            "copies_found": sum(len(v) for v in copies.values()),
             "items": [{"file": p.name, "id": fid, "action": act} for p, fid, act in todo]}
     if not a.commit:
         plan["committed"] = False
@@ -130,10 +141,22 @@ def cmd_ingest(a, state: State):
         ingested = now_iso()
         fresh = set()
         for ex in results:
-            prior = con.execute("SELECT note_path FROM items WHERE id=?", (ex.id,)).fetchone()
+            prior = con.execute("SELECT note_path, record FROM items WHERE id=?", (ex.id,)).fetchone()
             rel = prior["note_path"] if prior and prior["note_path"] else None
+            if prior and prior["record"]:
+                ex.copies = json.loads(prior["record"]).get("copies") or []   # survive re-extraction
             _index(con, manifest_record(ex, batch_id, rel), ex.text, ingested)
             fresh.add(ex.id)
+        for fid, paths in copies.items():
+            row = con.execute("SELECT record FROM items WHERE id=?", (fid,)).fetchone()
+            if not row or not row["record"]:
+                continue
+            rec = json.loads(row["record"])
+            known = {c["path"] for c in rec.get("copies") or []} | {rec.get("source_path"), rec.get("stored_path")}
+            new_c = [{"path": str(pp), "state": "present"} for pp in paths if str(pp) not in known]
+            if new_c:
+                _save(con, rec, copies=(rec.get("copies") or []) + new_c)
+                fresh.add(fid)
         report = apply_organization(state, con, content, journal, manifest, batch_id, ingested, force=fresh)
         con.commit()
     times = [ex.elapsed_ms for ex in results]
@@ -462,6 +485,12 @@ def run_cleanup(state: State, con, content: Path, commit: bool, batch_id: str | 
             continue                                   # stays held; nothing to do
         plan.append({"id": rec["id"], "note": rec.get("note_path"), "outcome": outcome, "reason": reason})
     counts = _count(p["outcome"] for p in plan)
+    moving = {p["id"] for p in plan}
+    pending_copies = sum(1 for rec in _records(con) if only is None or rec["id"] in only
+                         for c in rec.get("copies") or []
+                         if c.get("state") == "present" and (rec["source_state"] != "present" or rec["id"] in moving))
+    if pending_copies:
+        counts["copies_to_quarantine"] = pending_copies
     if not commit:
         return {"committed": False, "plan": counts, "items": plan[:200],
                 "already_held": con.execute("SELECT COUNT(*) FROM items WHERE source_state='held'").fetchone()[0]}
@@ -488,13 +517,16 @@ def run_cleanup(state: State, con, content: Path, commit: bool, batch_id: str | 
                                         "attempts": rec.get("attempts") or 0, "at": now_iso(),
                                         "note_path": rec.get("note_path")}, ensure_ascii=False) + "\n")
         con.commit()
-        rer = _rerender(state, con, content, journal, batch_id, set(moved))
+        copied = _quarantine_copies(state, con, journal, batch_id, only)
+        con.commit()
+        rer = _rerender(state, con, content, journal, batch_id, set(moved) | copied)
         con.commit()
     finally:
         audit.close()
     _write_audit(state, con, content)
     held = con.execute("SELECT COUNT(*) FROM items WHERE source_state='held'").fetchone()[0]
     return {"committed": True, "batch_id": batch_id, "moved": _count(p["outcome"] for p in plan if p["id"] in moved),
+            "copies_quarantined": _copies_count(con, "quarantined"),
             "held_total": held, "errors": errors, "notes_rewritten": rer["notes_written"],
             "conflicts": rer["conflicts"]}
 
@@ -527,17 +559,32 @@ def cmd_purge(a, state: State):
     now = now_iso()
     recs = _records(con, "source_state='quarantined'")
     due = [r for r in recs if lc.is_due(r, now)]
+    copies_due = [(r, k) for r in _records(con) for k, c in enumerate(r.get("copies") or [])
+                  if c.get("state") == "quarantined" and lc.is_due(c, now)]
     waiting = sorted(({"id": r["id"], "purge_after": r["purge_after"], "seconds_left": lc.seconds_left(r, now)}
                       for r in recs if not lc.is_due(r, now)), key=lambda x: x["seconds_left"])
     if not a.commit:
-        return Result({"committed": False, "now": now, "due": len(due), "waiting": len(waiting),
+        return Result({"committed": False, "now": now, "due": len(due), "copies_due": len(copies_due),
+                       "waiting": len(waiting),
                        "next": waiting[:10], "due_items": [{"id": r["id"], "purge_after": r["purge_after"]}
                                                            for r in due[:50]]})
     batch_id = now.replace(":", "-") + "-purge"
     purged, refused = [], []
     with state.lock():
         journal = state.journal(batch_id)
+        for r, k in copies_due:
+            r = json.loads(con.execute("SELECT record FROM items WHERE id=?", (r["id"],)).fetchone()[0])
+            c = r["copies"][k]
+            if lc.purge_file(Path(c["stored_path"]), state.root):
+                journal.append(op="delete_copy", id=r["id"], path=c["stored_path"], batch_id=batch_id)
+                r["copies"][k] = {**c, "state": "purged", "purged_at": now, "stored_path": None}
+                _save(con, r, copies=r["copies"])
+                purged.append(r["id"])
+            else:
+                refused.append({"id": r["id"], "path": c["stored_path"],
+                                "reason": "copy is not a file inside the quarantine folder; left untouched"})
         for r in due:
+            r = json.loads(con.execute("SELECT record FROM items WHERE id=?", (r["id"],)).fetchone()[0])
             if r.get("stored_path") and lc.purge_file(Path(r["stored_path"]), state.root):
                 journal.append(op="delete", id=r["id"], path=r["stored_path"], batch_id=batch_id)
                 _save(con, r, source_state="purged", purged_at=now, stored_path=None)
@@ -549,7 +596,8 @@ def cmd_purge(a, state: State):
         rer = _rerender(state, con, content, journal, batch_id, set(purged))
         con.commit()
     _write_audit(state, con, content)
-    return Result({"committed": True, "now": now, "purged": len(purged), "refused": refused,
+    return Result({"committed": True, "now": now, "purged": len(purged), "copies_purged": len(copies_due),
+                   "refused": refused,
                    "waiting": len(waiting), "notes_rewritten": rer["notes_written"]}, violation=bool(refused))
 
 
@@ -583,7 +631,16 @@ def cmd_restore(a, state: State):
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(r["stored_path"], dst)
             journal.append(op="restore", id=r["id"], path=str(dst), from_path=r["stored_path"], batch_id=batch_id)
-            _save(con, r, source_state="present", stored_path=None, quarantined_at=None, purge_after=None)
+            cs = r.get("copies") or []
+            for k, c in enumerate(cs):
+                if c.get("state") == "quarantined" and c.get("stored_path") and not Path(c["path"]).exists():
+                    Path(c["path"]).parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(c["stored_path"], c["path"])
+                    journal.append(op="restore_copy", id=r["id"], path=c["path"], from_path=c["stored_path"],
+                                   batch_id=batch_id)
+                    cs[k] = {"path": c["path"], "state": "present"}
+            _save(con, r, source_state="present", stored_path=None, quarantined_at=None, purge_after=None,
+                  copies=cs)
             done.append(r["id"])
         con.commit()
         _rerender(state, con, content, journal, batch_id, set(done))
@@ -618,6 +675,7 @@ def cmd_retry(a, state: State):
             ex.path = Path(r["source_path"])                 # the note keeps naming the original file
             for k in ("stored_path", "keep", "confirmed_by", "hold_reason"):
                 setattr(ex, k, r.get(k))
+            ex.copies = r.get("copies") or []
             ex.source_state, ex.attempts = "held", (r.get("attempts") or 0) + 1
             rec = manifest_record(ex, batch_id, r.get("note_path"), None,
                                   {"category": r.get("category") or "uncategorized", "decided_by": r.get("decided_by"),
@@ -1090,3 +1148,36 @@ def cmd_ask(a, state: State):
                    "results": results, "redactions": sum(reds),
                    "timing": {"load_s": round(load_s, 1), "total_s": round(elapsed, 1)},
                    "note": "suggestions, not decisions: act with `tag <id> --category ... --quote ...`"})
+
+
+
+def _copies_count(con, st: str) -> int:
+    return sum(1 for rec in _records(con) for c in rec.get("copies") or [] if c.get("state") == st)
+
+
+def _quarantine_copies(state: State, con, journal, batch_id: str, only: set[str] | None) -> set[str]:
+    """Copies of an image that has left its source are redundant: an identical file now sits in
+    quarantine, held or attachments. They go to quarantine on the same 7-day clock."""
+    changed = set()
+    for rec in _records(con, "source_state != 'present'"):
+        if only is not None and rec["id"] not in only:
+            continue
+        cs, touched = rec.get("copies") or [], False
+        for k, c in enumerate(cs):
+            src = Path(c["path"])
+            if c.get("state") != "present" or not src.exists():
+                continue
+            dst = state.root / "quarantine" / batch_id / f"{rec['id'].split(':')[1][:8]}-copy{k + 1}-{src.name}"
+            try:
+                lc._move(src, dst)
+            except ToolError:
+                continue
+            now = now_iso()
+            cs[k] = {**c, "state": "quarantined", "stored_path": str(dst), "quarantined_at": now,
+                     "purge_after": lc.plus_seconds(now, lc.QUARANTINE_SECONDS)}
+            journal.append(op="quarantine_copy", id=rec["id"], path=str(dst), from_path=str(src), batch_id=batch_id)
+            touched = True
+        if touched:
+            _save(con, rec, copies=cs)
+            changed.add(rec["id"])
+    return changed

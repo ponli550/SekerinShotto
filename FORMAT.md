@@ -5,7 +5,7 @@ vault wrapper manages an Obsidian vault. Neither imports the other. They meet
 only at the files and the JSON described here. Any future ingester (PDF, web
 clip, …) that writes this format plugs into the same wrapper.
 
-Status: draft v0.14.0 — 2026-09-23.
+Status: draft v0.15.0 — 2026-09-23.
 
 ## 1. CLI contract (both tools)
 
@@ -256,7 +256,13 @@ Nothing waits on a human, and every non-standard outcome is logged. `cleanup` mo
 - Every move is a signed journal row (`quarantine`, `attach`, `hold`, `restore`, `delete`).
 - `ingest --cleanup` runs cleanup right after a commit. `cleanup`, `retry`, `ingest --cleanup` exit 2 while
   images are held: a valid answer, not a failure.
-- Known gap: a byte-identical copy of an already-extracted image is skipped by ingest and left where it is.
+- Byte-identical copies (same sha256, another path) are recorded on their item as `copies`
+  (`{path, state, stored_path, quarantined_at, purge_after, purged_at}`), never re-extracted. Once the
+  item has left its source, cleanup quarantines every present copy on its own 7-day clock (journal op
+  `quarantine_copy`): an identical file already sits in quarantine, held or attachments. `purge` deletes
+  due copies with the same containment guard; `restore` brings them back with their item. A copy of a
+  purged image added later is recorded and quarantined, not resurrected. Measured: 12 images + 3
+  duplicates → 15 quarantined, 15 purged, source folder empty.
 
 Note frontmatter gains `source_state` and `purge_after`; the Source section states where the image is.
 
