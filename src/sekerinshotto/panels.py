@@ -29,13 +29,14 @@ _UI_NOISE = re.compile(r"(?i)^(follow|following|reply|replies|like|likes|share|s
 _CLOCKISH = re.compile(r"^[\d:.%/\s-]+(am|pm)?$|^\d{1,2}:\d{2}")
 
 
-def query_file() -> Path:
-    return Path.home() / ".cache" / "sekerinshotto" / "results.json"
+def query_file(state_root: Path) -> Path:
+    """Per state folder: a trial and a real state never share what the results board shows."""
+    return state_root / "results.json"
 
 
-def set_query(query: str | None, category: str | None, state: str | None = None) -> dict:
+def set_query(state_root: Path, query: str | None, category: str | None, state: str | None = None) -> dict:
     q = {"query": (query or "").strip(), "category": category or None, "state": state or None, "at": now_iso()}
-    f = query_file()
+    f = query_file(state_root)
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_text(json.dumps(q) + "\n")
     return q
@@ -105,7 +106,7 @@ def _home(con, content, state_root, now) -> list[str]:
     inbox = sum(1 for p in (state_root / "inbox").glob("*") if p.is_file() and not p.name.startswith("."))
     waiting = max(0, inbox - con.execute("SELECT COUNT(*) FROM items WHERE source_path LIKE ?",
                                          (str(state_root / "inbox") + "/%",)).fetchone()[0])
-    todo.insert(0, (waiting, "inbox", "photos waiting · I = extract, A = add more"))
+    todo.insert(0, (waiting, "inbox", "photos waiting · I = extract, A = drop zone"))
     right += [f"  {k:<14} {n:>3}  {why}" for n, k, why in todo if n] or ["  nothing to do · A = add photos"]
     right += ["", "recently added · n = all notes"]
     # ambient panel: app and key terms only, never OCR text (headlines live on the on-demand results board)
@@ -214,7 +215,7 @@ def render(view: str, con, content: Path | None, state_root: Path, category: str
             out.append(f"  {iid}  {countdown(left):<18} {after}  {Path(note).stem if note else ''}")
     elif view == "results":
         try:
-            q = json.loads(query_file().read_text())
+            q = json.loads(query_file(state_root).read_text())
         except (FileNotFoundError, json.JSONDecodeError):
             q = {"query": "", "category": None}
         words = re.findall(r"[\w'-]+", q.get("query") or "")
@@ -284,9 +285,8 @@ def keys_for(name: str) -> str:
          "# no key passes --commit on its own.", "[global]"] + _nav()
     g += ["s\tsearch → results board (on top)\tinput:search: |term|sekerinshotto panel set '{input}' && panvim popup ss-results",
           "w\twhere things stand (status)\tterm-hold\tsekerinshotto status",
-          "A\tADD photos: drag files or folders onto the prompt (plan, then confirm)\t"
-          "input:drop photos here, then Enter: |term-hold|" + CONFIRM.format(cmd="add {input}", word="yes"),
-          "f\topen the inbox folder in Finder (drop photos there, then I)\tterm\topen \"$(sekerinshotto panel inbox)\"",
+          "A\tADD photos: drop zone — Finder inbox + auto-extract until q (confirm first)\tterm-side\t"
+          + CONFIRM.format(cmd="dropzone", word="yes"),
           "I\tINGEST the inbox (plan, then confirm)\tterm-hold\t" + CONFIRM.format(cmd="ingest", word="yes"),
           "C\tCLEANUP: route images (plan, then confirm)\tterm-hold\t" + CONFIRM.format(cmd="cleanup", word="yes"),
           "O\tORGANIZE: re-apply rules (plan, then confirm)\tterm-hold\t" + CONFIRM.format(cmd="organize", word="yes"),
@@ -415,13 +415,13 @@ def _sync_registry_titles(registry: Path) -> list[str]:
     return fixed
 
 
-def set_row(con, row: str) -> dict:
+def set_row(state_root: Path, con, row: str) -> dict:
     """What Enter on a board row means: an image state or a category -> list; anything else -> search."""
     if row in STATES:
-        return set_query(None, None, row)
+        return set_query(state_root, None, None, row)
     if con.execute("SELECT 1 FROM items WHERE category=? LIMIT 1", (row,)).fetchone():
-        return set_query(None, row)
-    return set_query(row, None)
+        return set_query(state_root, None, row)
+    return set_query(state_root, row, None)
 
 
 # Drill-down opens ss-results as its own popup on top (full size), instead of squeezing it into this
