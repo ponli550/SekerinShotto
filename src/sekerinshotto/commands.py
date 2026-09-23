@@ -199,9 +199,11 @@ def _index(con, rec: dict, text: str, ingested: str) -> None:
     con.execute("""INSERT INTO items (id, source_path, source_app, captured_at, width, height, bytes,
                    extractor_version, source_state, status, status_reason, ocr_confidence, text_chars,
                    note_path, batch_id, ingested_at, record, category, decided_by, why, group_id, rank,
-                   group_size, stored_path, purge_after, hold_reason, attempts, keep, confirmed_by)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   group_size, stored_path, purge_after, hold_reason, attempts, keep, confirmed_by, added_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(id) DO UPDATE SET source_path=excluded.source_path,
+                   source_app=excluded.source_app, captured_at=excluded.captured_at, width=excluded.width,
+                   height=excluded.height, bytes=excluded.bytes,
                    extractor_version=excluded.extractor_version, status=excluded.status,
                    status_reason=excluded.status_reason, ocr_confidence=excluded.ocr_confidence,
                    text_chars=excluded.text_chars, note_path=excluded.note_path,
@@ -218,7 +220,8 @@ def _index(con, rec: dict, text: str, ingested: str) -> None:
                  json.dumps(rec, ensure_ascii=False), rec.get("category"), rec.get("decided_by"), rec.get("why"),
                  rec.get("group"), rec.get("rank"), rec.get("group_size"), rec.get("stored_path"),
                  rec.get("purge_after"), rec.get("hold_reason"), rec.get("attempts") or 0,
-                 1 if rec.get("keep") else 0, rec.get("confirmed_by")))
+                 1 if rec.get("keep") else 0, rec.get("confirmed_by"), ingested))
+    # added_at is set once, on first insert (the ON CONFLICT branch never touches it)
     ents = rec["entities"]
     for u in ents["urls"]:
         sub = u.get("flag") or ("corrected" if u.get("corrected") else None)
@@ -326,7 +329,7 @@ def apply_organization(state: State, con, content: Path, journal, manifest: Path
     moves = []
     for i in targets:
         old = items[i]["_note_path"]
-        if old and not old.startswith(f"notes/{org[i]['category']}/"):
+        if old and (not old.startswith(f"notes/{org[i]['category']}/") or Path(old).name.startswith("undated-")):
             moves.append({"id": i, "from": old, "to": f"notes/{org[i]['category']}/{Path(old).name}"})
     groups: dict[str, list[str]] = {}
     for i, o in org.items():
@@ -349,7 +352,10 @@ def apply_organization(state: State, con, content: Path, journal, manifest: Path
             text = rec.get("_text", "")
             ex = extraction_from_record(rec, text)
             old_rel = rec["_note_path"]
-            new_rel = f"notes/{o['category']}/{Path(old_rel).name}" if old_rel else note_relpath(ex, o["category"])
+            name = Path(old_rel).name if old_rel else None
+            if name and name.startswith("undated-") and ex.captured_at:
+                name = None                                  # the one rename: an undated note that gained a date
+            new_rel = f"notes/{o['category']}/{name}" if name else note_relpath(ex, o["category"])
             old_path, new_path = (content / old_rel) if old_rel else None, content / new_rel
             existing = old_path.read_text() if old_path and old_path.exists() else None
             try:
@@ -1336,8 +1342,9 @@ def cmd_add(a, state: State):
                             + (f"; skipping {len(skipped)} non-image path(s)" if skipped else "") + "\n"
                             + "".join(f"  {n}\n" for n in plan["items"]))
     state.ensure()
-    placed = 0
+    placed, ids = 0, []
     for f in files:
+        ids.append(sha256_file(f))
         dst = inbox / f.name
         if dst.exists():
             if sha256_file(dst) == sha256_file(f):
@@ -1349,6 +1356,13 @@ def cmd_add(a, state: State):
     a.workers = getattr(a, "workers", None) or 4
     res = cmd_ingest(a, state)
     d = res.data
-    return Result({"committed": True, "placed": placed, **plan, "ingest": d}, violation=res.violation,
-                  human=f"added {placed} image(s); extracted {d.get('written', 0)} note(s)"
-                        f"{' · ' + str(len(d.get('failed') or [])) + ' failed' if d.get('failed') else ''}\n")
+    con = state.connect()
+    notes = [dict(r) for r in con.execute(
+        f"SELECT substr(id,8,8) AS id8, category, note_path, source_state FROM items WHERE id IN "
+        f"({','.join('?' * len(ids))})", ids)]
+    lines = [f"added {placed} image(s); extracted {d.get('written', 0)} note(s)"
+             + (f" · {len(d.get('failed') or [])} failed" if d.get("failed") else ""), f"vault: {content}"]
+    lines += [f"  {n['id8']}  {n['category']:<13} {n['note_path']}" for n in notes]
+    lines += ["", "the copies wait in the inbox until cleanup (C) routes them"]
+    return Result({"committed": True, "placed": placed, **plan, "notes": notes, "ingest": d},
+                  violation=res.violation, human="\n".join(lines) + "\n")

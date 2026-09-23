@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
-EXTRACTOR_VERSION = "7"
+EXTRACTOR_VERSION = "8"
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".heic", ".webp", ".tif", ".tiff", ".bmp", ".gif"}
 
 FAIL_MIN_CHARS = 3            # fewer chars and no barcode -> failed/no_text
@@ -31,8 +31,27 @@ def sha256_file(path: Path) -> str:
 _ANDROID = re.compile(r"^Screenshot_(\d{8})_(\d{6})_(.+)$")
 
 
+_OTHER_NAMES = [   # (regex, app package or None) -> date groups Y M D h m s
+    (re.compile(r"^WhatsApp Image (\d{4})-(\d{2})-(\d{2}) at (\d{1,2})\.(\d{2})\.(\d{2})"), "com.whatsapp"),
+    (re.compile(r"^Screenshot (\d{4})-(\d{2})-(\d{2}) at (\d{1,2})\.(\d{2})\.(\d{2})"), "com.apple.macos"),
+    (re.compile(r"^(?:IMG|VID|PXL|MVIMG)_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})"), None),
+    (re.compile(r"^Screenshot_(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})"), None),
+]
+
+
 def parse_filename(name: str) -> dict:
     stem = Path(name).stem
+    for rx, app in _OTHER_NAMES:
+        m2 = rx.match(stem)
+        if m2:
+            y, mo, d, h, mi, sec = (int(x) for x in m2.groups())
+            if stem.upper().rstrip().endswith("PM") and h < 12:        # macOS: "… at 3.45.12 PM"
+                h += 12
+            try:
+                out = {"captured_at": datetime(y, mo, d, h, mi, sec).strftime("%Y-%m-%dT%H:%M:%S")}
+            except ValueError:
+                return {}
+            return {**out, **({"source_app": app} if app else {})}
     m = _ANDROID.match(stem)
     if not m:
         return {}
@@ -436,6 +455,8 @@ def _extract(path: Path, file_id: str | None = None) -> Extraction:
     t0 = time.perf_counter()
     ex = Extraction(id=file_id or sha256_file(path), path=path, bytes=path.stat().st_size)
     ex.__dict__.update(parse_filename(path.name))
+    if not ex.captured_at:
+        ex.captured_at = fallback_date(path)
     try:
         ex.width, ex.height, ex.lines, bars = _vision_read(path)
     except (ValueError, RuntimeError) as e:
@@ -492,3 +513,20 @@ def iter_images(src: Path, limit: int | None = None):
             n += 1
             if limit and n >= limit:
                 return
+
+
+def fallback_date(path: Path) -> str | None:
+    """When the filename carries no date: EXIF DateTimeOriginal, else the file's modification time."""
+    from PIL import Image
+    try:
+        with Image.open(path) as im:
+            exif = im.getexif()
+            raw = exif.get_ifd(0x8769).get(36867) or exif.get(306)       # DateTimeOriginal, DateTime
+            if raw:
+                return datetime.strptime(str(raw).strip(), "%Y:%m:%d %H:%M:%S").strftime("%Y-%m-%dT%H:%M:%S")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%dT%H:%M:%S")
+    except OSError:
+        return None

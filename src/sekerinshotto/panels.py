@@ -98,12 +98,13 @@ def _home(con, content, state_root, now) -> list[str]:
                                          (str(state_root / "inbox") + "/%",)).fetchone()[0])
     todo.insert(0, (waiting, "inbox", "photos waiting · I = extract, A = add more"))
     right += [f"  {k:<14} {n:>3}  {why}" for n, k, why in todo if n] or ["  nothing to do · A = add photos"]
-    right += ["", "recent notes · n = all notes"]
+    right += ["", "recently added · n = all notes"]
     # ambient panel: app and key terms only, never OCR text (headlines live on the on-demand results board)
-    for iid, cat, cap, app, rec in _q(con, """SELECT substr(id,8,8), category, captured_at, source_app, record
-            FROM items ORDER BY captured_at DESC LIMIT 8"""):
+    for iid, cat, added, app, rec in _q(con, """SELECT substr(id,8,8), category, added_at, source_app, record
+            FROM items ORDER BY added_at DESC, captured_at DESC LIMIT 8"""):
         terms = ", ".join((json.loads(rec).get("terms") or [])[:3])
-        right.append(f"  {iid} {(cap or '')[5:10]} {cat[:9]:<9} {(app or '').split('.')[-1][:10]:<10} {terms}")
+        when = _local(added)[4:10] if added else ""
+        right.append(f"  {iid} {when:<6} {cat[:9]:<9} {(app or '').split('.')[-1][:10]:<10} {terms}")
     c = Counter()
     for (rec,) in _q(con, "SELECT record FROM items WHERE record IS NOT NULL"):
         c.update(json.loads(rec).get("terms") or [])
