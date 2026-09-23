@@ -36,9 +36,27 @@ def words(text: str) -> list[str]:
     return [w.strip("'-") for w in _WORD.findall(text.lower()) if w.strip("'-") not in STOP and len(w) >= 4]
 
 
-def key_terms(texts: dict[str, str]) -> dict[str, list[str]]:
-    """{id: [top terms]} for every id. Deterministic: ties broken alphabetically."""
-    tfs = {i: Counter(words(t)) for i, t in texts.items()}
+def load_stopterms(state_root) -> set[str]:
+    """<state>/stopterms.txt: words that must never become key terms (names the redactor misses)."""
+    f = state_root / "stopterms.txt" if state_root else None
+    if not f or not f.exists():
+        return set()
+    return {w.strip().lower() for w in f.read_text().splitlines() if w.strip() and not w.startswith("#")}
+
+
+def key_terms(texts: dict[str, str], extra_stop: set[str] = frozenset()) -> dict[str, list[str]]:
+    """{id: [top terms]} for every id. Deterministic: ties broken alphabetically.
+    A word the PII redactor removes anywhere (a name, an address part) never becomes a term: terms are
+    shown on ambient panels and returned to the calling LLM."""
+    from .redact import GIVEN, redact
+    tfs, pii = {}, {g.lower() for g in GIVEN.split("|")} | set(extra_stop)   # given names are never concepts
+    for i, t in texts.items():
+        mine = Counter(words(t))
+        pii |= set(mine - Counter(words(redact(t)[0])))          # any occurrence redacted -> excluded everywhere
+        tfs[i] = mine
+    for tf in tfs.values():
+        for w in pii & set(tf):
+            del tf[w]
     df = Counter()
     for tf in tfs.values():
         df.update(tf.keys())

@@ -105,7 +105,7 @@ def score(rec: dict) -> tuple[float, str]:
     return round(s, 3), f"QR {qr}, links {links}, {chars} chars, confidence {conf:.2f}, {px / 1e6:.1f} MP"
 
 
-def organize(items: dict[str, dict], rules, content: Path) -> dict[str, dict]:
+def organize(items: dict[str, dict], rules, content: Path, stopterms: set[str] = frozenset()) -> dict[str, dict]:
     """-> {id: {category, decided_by, why, group, rank, size, score, score_why}}"""
     out = {}
     for iid, rec in items.items():
@@ -125,7 +125,7 @@ def organize(items: dict[str, dict], rules, content: Path) -> dict[str, dict]:
         out[iid] = {"category": cat, "decided_by": by, "why": why, "group": None, "rank": None,
                     "size": None, "score": sc, "score_why": sc_why}
 
-    terms = key_terms({i: r.get("_text", "") for i, r in items.items()})
+    terms = key_terms({i: r.get("_text", "") for i, r in items.items()}, stopterms)
     for i in out:
         out[i]["terms"] = terms.get(i, [])
 

@@ -5,7 +5,7 @@ vault wrapper manages an Obsidian vault. Neither imports the other. They meet
 only at the files and the JSON described here. Any future ingester (PDF, web
 clip, …) that writes this format plugs into the same wrapper.
 
-Status: draft v0.20.0 — 2026-09-23.
+Status: draft v0.21.0 — 2026-09-23.
 
 ## 1. CLI contract (both tools)
 
@@ -420,12 +420,20 @@ closes its pane when the command exits, which made them flash and vanish. Titles
 (`panvim new` writes them unquoted and `panvim audit` only matches that form); `panels install` repairs
 older wrappers and syncs the registry title column of `ss*` rows only.
 
+Enter (`[direct] <CR>`) drills down everywhere: on a category, image state or key term it opens the
+results board; on a note row it opens the card. Only the left column of a two-column board takes Enter,
+because panvim resolves a row from the first token of the line.
+
+Key terms never include a word the PII redactor removed anywhere, a common Malaysian given name, or a
+word in `<state>/stopterms.txt` (for names the redactor misses; applied on the next `organize`).
+Redaction also catches bare names anchored on a common given name (`Mohamad Zarif Iman`).
+
 Keys follow pan's convention: lowercase = read-only; UPPERCASE runs the plan, then asks the user to type
 `yes` (`purge` for purge) before committing. No key passes `--commit` on its own; a test enforces it.
 
 | Panel | Rows | Keys |
 |---|---|---|
-| `ss` (visible, all ss* panels 95%×90% of the terminal) | image states, next purge countdown, categories, to-do counts | h c k g a p n: panels · s search · w status · C cleanup · O organize |
+| `ss` (visible, all ss* panels 95%×90% of the terminal) | two columns: left image states and categories with bars (Enter lists them), next purge with countdown and local time; right to-do, recent notes (app + key terms, never OCR text), top concepts, groups/sequences; header names the state and vault | h c k g a p n: panels · s search · w status · C cleanup · O organize |
 | `ss-class` | category, count, rule vs caller | l list the category |
 | `ss-concepts` | key term, notes | l notes with the term |
 | `ss-groups` | group, copies, best copy | o open the hub note |

@@ -318,7 +318,8 @@ def apply_organization(state: State, con, content: Path, journal, manifest: Path
     """Classify, group and rank every item; (re)write the notes whose organization changed."""
     rules, rules_src = load_rules(state.root)
     items = load_items(con)
-    org = organize(items, rules, content)
+    from .terms import load_stopterms
+    org = organize(items, rules, content, load_stopterms(state.root))
     targets = sorted(i for i in items if i in force or changed(items[i], org[i]) or not items[i]["_note_path"])
     moves = []
     for i in targets:
@@ -1098,7 +1099,7 @@ from . import panels as pv  # noqa: E402
 
 
 @command("panel", "Render one read-only panvim panel (counts, reasons, names; never OCR text)",
-         args=[Arg("view", "home | class | concepts | groups | audit | quarantine | notes | results | set | path | image"),
+         args=[Arg("view", "home | class | concepts | groups | audit | quarantine | notes | results | set | set-row | path | image"),
                Arg("id", "for path/image: an item id / prefix / note filename, or a group id", required=False),
                Arg("--category", "notes view: only this category")],
          details="What panvim runs on its timer. Reads the index only, never extraction or Laya. "
@@ -1109,6 +1110,11 @@ def cmd_panel(a, state: State):
         return Result({"_text": "SekerinShotto — not initialised\n\nRun: sekerinshotto ingest <folder> --content <vault folder> --commit\n"})
     con = state.connect()
     content = _content_root(state, None, required=False)
+    if a.view == "set-row":
+        if not a.id:
+            raise ToolError("panel set-row needs a row value")
+        q = pv.set_row(state.connect(), a.id)
+        return Result({"_text": f"results: {q}\n"})
     if a.view == "set":
         q = pv.set_query(a.id, a.category)
         return Result({"_text": f"results: {q['query'] or '*'}{' in ' + q['category'] if q['category'] else ''}\n"})
