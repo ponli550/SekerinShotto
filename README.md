@@ -19,6 +19,7 @@ uv run sekerinshotto schema --json                      # the full contract
 uv run sekerinshotto domains update --commit            # once: reference lists for URL correction
 uv run sekerinshotto ingest ~/Screenshots --json        # plan: what would be extracted
 uv run sekerinshotto ingest ~/Screenshots --commit      # extract and write notes
+uv run sekerinshotto add photo.jpg "My Folder" --commit # or copy photos into the inbox and extract them
 uv run sekerinshotto organize --commit                  # re-apply rules/groups after editing rules.toml
 uv run sekerinshotto cleanup --commit                   # route images: quarantine / attachments / held
 uv run sekerinshotto purge --commit                     # delete quarantined images whose 7 days are up
@@ -65,6 +66,9 @@ sekerinshotto panels install --commit # creates the ss* panels via `panvim new`
 panvim popup ss                       # home panel; h c k g a p n jump between panels
 sekerinshotto config use-state PATH --commit   # if your state folder is not the default
 ```
+
+To add photos from the panel: press Space A, drag files or folders from Finder onto the prompt, press
+Enter, check the plan, type `yes`. Or press f to open the inbox in Finder, drop them there, and press I.
 
 Panels are read-only and never show screenshot text. Uppercase keys run the plan and ask you to type
 `yes` before committing.

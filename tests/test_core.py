@@ -621,6 +621,8 @@ def test_no_key_commits_without_a_typed_word(name):
         if line.startswith(("#", "[")) or not line.strip():
             continue
         key, label, action, arg = (line.split("\t") + ["", "", ""])[:4]
+        if action.startswith(("input:", "input2:")):
+            arg = action.split("|", 2)[2]                    # input:PROMPT|action|argument
         if "--commit" in line:
             assert key.isupper(), line                              # pan's convention: UPPERCASE = gated
             assert '[ "$a" =' in arg and arg.index("read a") < arg.index("--commit"), line
@@ -891,3 +893,27 @@ def test_stopterms_file_excludes_words(tmp_path):
                               "g": "v", "h": "u", "i": "t"}.items()}
     assert "afif" in {t for v in key_terms(texts).values() for t in v}
     assert "afif" not in {t for v in key_terms(texts, load_stopterms(tmp_path)).values() for t in v}
+
+
+def test_confirm_keeps_dropped_paths_intact(tmp_path):
+    """The A key: panvim runs the argument with bash -c after substituting {input} with what the terminal
+    pasted on drop (shell-escaped paths). A 'no' must add nothing; a path with spaces must reach `add`."""
+    import os
+    d = tmp_path / "My Photos"
+    d.mkdir()
+    Image.new("RGB", (40, 40), "white").save(d / "a b.png")
+    line = next(l for l in pv.keys_for("ss").splitlines() if l.startswith("A\t"))
+    cmd = line.split("\t")[2].split("|", 2)[2].replace("{input}", str(d).replace(" ", "\\ "))
+    env = {**os.environ, "SEKERINSHOTTO_STATE": str(tmp_path / "st"), "SEKERINSHOTTO_CONTENT": str(tmp_path / "vault")}
+    p = subprocess.run(["bash", "-c", cmd], input="no\n", capture_output=True, text=True, env=env)
+    assert "would copy 1 image(s)" in p.stdout and "cancelled" in p.stdout
+    assert not (tmp_path / "st" / "inbox").exists() or not any((tmp_path / "st" / "inbox").iterdir())
+
+
+def test_add_checks_the_vault_before_copying(tmp_path):
+    import os
+    Image.new("RGB", (40, 40), "white").save(tmp_path / "x.png")
+    env = {**os.environ, "SEKERINSHOTTO_STATE": str(tmp_path / "st")}
+    code, res = _run("add", str(tmp_path / "x.png"), "--commit", env=env)
+    assert code == 1 and "no content root" in res["error"]
+    assert not (tmp_path / "st" / "inbox").exists() or not any((tmp_path / "st" / "inbox").iterdir())

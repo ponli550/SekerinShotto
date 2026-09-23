@@ -43,6 +43,7 @@ class Arg:
     default: Any = None
     flag: bool = False             # store_true switch
     required: bool = False
+    many: bool = False             # positional that takes one or more values
 
     def spec(self) -> dict:
         d = {"name": self.name, "help": self.help}
@@ -50,6 +51,8 @@ class Arg:
             d["type"] = "switch"
         else:
             d["type"] = {int: "int", str: "string", float: "float"}.get(self.type, "string")
+        if self.many:
+            d["type"] = "string list"
         if self.default is not None and not self.flag:
             d["default"] = self.default
         if self.required or not self.name.startswith("--"):

@@ -5,7 +5,7 @@ vault wrapper manages an Obsidian vault. Neither imports the other. They meet
 only at the files and the JSON described here. Any future ingester (PDF, web
 clip, …) that writes this format plugs into the same wrapper.
 
-Status: draft v0.21.0 — 2026-09-23.
+Status: draft v0.22.0 — 2026-09-23.
 
 ## 1. CLI contract (both tools)
 
@@ -192,7 +192,7 @@ can see it; working state and bulky images stay out of the vault.
   AUDIT.md                   human-readable audit of failures, regenerated each run
 
 <state>/                     working state — never in a vault, never synced
-  inbox/                     default drop folder (any folder can also be passed in)
+  inbox/                     default drop folder: `add` copies photos here; `ingest` with no path reads it
   held/                      images that failed to read, kept (no clock), retried automatically
   quarantine/<batch_id>/     extracted images, purged exactly 604800 s after quarantined_at
   index.sqlite               hashes, text (FTS), entities, state, tombstones
@@ -419,6 +419,13 @@ Side-pane keys that only print (`show`) are piped into `less -R`: panvim's `term
 closes its pane when the command exits, which made them flash and vanish. Titles are `[A-Za-z0-9_-]+`
 (`panvim new` writes them unquoted and `panvim audit` only matches that form); `panels install` repairs
 older wrappers and syncs the registry title column of `ss*` rows only.
+
+Adding photos from a panel: a terminal cannot receive a dropped file, it pastes the file's path as text.
+`A` opens a prompt, so dragging files or folders onto it pastes their (shell-escaped) paths; Enter shows
+the `add` plan, typing `yes` copies them into `<state>/inbox` and extracts them. `f` opens the inbox in
+Finder (drag there instead), `I` extracts the inbox. `add` checks the vault binding before copying
+anything. Keys run through panvim's own `bash -c`, with no extra quoting layer, so paths with spaces or
+quotes arrive intact.
 
 Enter (`[direct] <CR>`) drills down everywhere: on a category, image state or key term it opens the
 results board; on a note row it opens the card. Only the left column of a two-column board takes Enter,
