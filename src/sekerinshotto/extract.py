@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
-EXTRACTOR_VERSION = "8"
+EXTRACTOR_VERSION = "9"
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".heic", ".webp", ".tif", ".tiff", ".bmp", ".gif"}
 
 FAIL_MIN_CHARS = 3            # fewer chars and no barcode -> failed/no_text
