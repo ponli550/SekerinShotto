@@ -16,11 +16,16 @@ macOS 13+ (Apple Vision does the OCR and barcode detection), Python 3.12+, [uv](
 uv sync
 export SEKERINSHOTTO_CONTENT=~/Notes/SekerinShotto      # where notes go (inside a vault)
 uv run sekerinshotto schema --json                      # the full contract
+uv run sekerinshotto domains update --commit            # once: reference lists for URL correction
 uv run sekerinshotto ingest ~/Screenshots --json        # plan: what would be extracted
 uv run sekerinshotto ingest ~/Screenshots --commit      # extract and write notes
 uv run sekerinshotto status
 uv run sekerinshotto reindex --commit                   # rebuild the index from manifests + notes
 ```
+
+OCR misreads such as `docs.qoogle.com` or `Inkd.in` are corrected to the real domain when the evidence
+points to exactly one candidate; the raw reading is always kept beside it. `domains update` is the only
+command that touches the network, and it downloads reference lists, never a captured URL.
 
 State (index, manifests, signed journal) lives in `~/.local/share/sekerinshotto/`, outside any vault and
 never in a synced folder. Rerunning `ingest` skips images already extracted with the current extractor.

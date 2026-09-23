@@ -27,30 +27,50 @@ class _Parser(argparse.ArgumentParser):
 def build() -> argparse.ArgumentParser:
     root = _Parser(prog="sekerinshotto", description="Deterministic screenshot extractor")
     sub = root.add_subparsers(dest="cmd", parser_class=_Parser)
+    groups: dict[str, argparse._SubParsersAction] = {}
     for c in REGISTRY.values():
-        p = sub.add_parser(c.path, help=c.summary, description=c.details or c.summary)
+        head, _, tail = c.path.partition(" ")
+        if tail:                                       # nested: "domains update"
+            if head not in groups:
+                g = sub.add_parser(head, help=f"{head} commands")
+                groups[head] = g.add_subparsers(dest="sub", parser_class=_Parser)
+            p = groups[head].add_parser(tail, help=c.summary, description=c.details or c.summary)
+        else:
+            p = sub.add_parser(c.path, help=c.summary, description=c.details or c.summary)
         for arg in c.args + COMMON_ARGS + ([COMMIT_ARG] if c.writes else []):
             _add(p, arg)
     return root
 
 
+def _path_of(argv: list[str]) -> str:
+    words = [w for w in argv if not w.startswith("-")]
+    for n in (2, 1):
+        cand = " ".join(words[:n])
+        if cand in REGISTRY:
+            return cand
+    return "sekerinshotto"
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     as_json = "--json" in argv
-    path = next((x for x in argv if x in REGISTRY), "sekerinshotto")
+    path = _path_of(argv)
     try:
         a = build().parse_args(argv)
         if not a.cmd:
             raise ToolError(f"no command given; valid: {', '.join(REGISTRY)}")
+        name = f"{a.cmd} {a.sub}" if getattr(a, "sub", None) else a.cmd
+        if name not in REGISTRY:
+            raise ToolError(f"unknown command {name!r}; valid: {', '.join(REGISTRY)}")
         state = State(resolve_state(a.state))
-        res = REGISTRY[a.cmd].handler(a, state)
+        res = REGISTRY[name].handler(a, state)
     except ToolError as e:
         emit(envelope(path, error=str(e)), as_json)
         return EXIT_ERROR
     except Exception as e:  # noqa: BLE001 - the contract promises an envelope even on a bug
         emit(envelope(path, error=f"internal error: {type(e).__name__}: {e}"), as_json)
         return EXIT_ERROR
-    emit(envelope(a.cmd, data=res.data), as_json)
+    emit(envelope(name, data=res.data), as_json)
     return EXIT_VIOLATION if res.violation else EXIT_OK
 
 

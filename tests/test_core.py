@@ -152,10 +152,11 @@ def test_end_to_end_plan_commit_rerun(sample):
 
     code, res = _run("ingest", str(src), "--content", str(content), "--commit", env=env)
     d = res["data"]
-    assert code == 0 and d["written"] == 1 and d["urls"] == {"from_qr": 1, "from_ocr": 1}
+    # the OCR-read docs.example.com is confirmed by the QR code on the same domain
+    assert code == 0 and d["written"] == 1 and d["urls"]["qr"] == 1 and d["urls"]["crossref"] == 1
     note = next(content.rglob("*.md")).read_text()
     assert "[q.example.com/abc](https://q.example.com/abc) · from QR" in note
-    assert "`docs.example.com/form` · read by OCR, unverified" in note
+    assert "[docs.example.com/form](https://docs.example.com/form) · read by OCR, domain crossref" in note
     assert 'source_app: "com.android.chrome"' in note
 
     code, again = _run("ingest", str(src), "--content", str(content), env=env)
@@ -173,7 +174,8 @@ def test_db_is_disposable(sample):
         f.unlink()
     code, res = _run("reindex", "--commit", env=env)
     assert code == 0 and res["data"]["rebuilt"] == 1
-    assert _run("status", env=env)[1]["data"]["urls_by_verification"] == {"none": 1, "qr": 1}
+    assert _run("status", env=env)[1]["data"]["urls_by_verification"] == {"crossref": 1, "qr": 1}
+    assert _run("status", env=env)[1]["data"]["domain_list"] is None
 
 
 def test_errors_are_envelopes(tmp_path):
@@ -193,3 +195,88 @@ def test_schema_matches_registry():
     assert [c["path"] for c in data["commands"]] == list(REGISTRY)
     ingest = next(c for c in data["commands"] if c["path"] == "ingest")
     assert ingest["writes"] and any(a["name"] == "--commit" for a in ingest["args"])
+
+
+# ---------------------------------------------------------------- URL correction (phase 2)
+import sqlite3 as _sq
+
+from sekerinshotto.domains import DomainIndex, PSL
+from sekerinshotto.extract import find_urls_in_lines, raw_host
+from sekerinshotto.urlfix import candidates, resolve
+
+_RANKS = {"google.com": 1, "paypal.com": 170, "gmail.com": 231, "lnkd.in": 1978, "maybank2u.com.my": 8434,
+          "l1nk.dev": 307935, "acesse.one": 319761, "inkd.in": 794020}
+
+
+@pytest.fixture
+def dom(tmp_path):
+    f = tmp_path / "domains"
+    f.mkdir()
+    con = _sq.connect(f / "ranks.sqlite")
+    con.execute("CREATE TABLE ranks (domain TEXT PRIMARY KEY, rank INTEGER)")
+    con.executemany("INSERT INTO ranks VALUES (?,?)", _RANKS.items())
+    con.commit()
+    con.close()
+    (f / "psl.dat").write_text("com\nin\ndev\none\nmy\ncom.my\ngov.my\n")
+    (f / "tlds.txt").write_text("# v\nCOM\nIN\nDEV\nONE\nMY\n")
+    return DomainIndex(f)
+
+
+@pytest.mark.parametrize("raw,host,corrected", [
+    ("docs.qoogle.com", "docs.google.com", True),      # q->g; must NOT become d0cs.google.com
+    ("Inkd.in", "lnkd.in", True),                      # the raw lookalike is itself ranked (794020)
+    ("|1nk.dev", "l1nk.dev", True),                    # invalid char; "i1nk.dev" is unranked
+    ("paypaI.com", "paypal.com", True),
+    ("rnaybank2u.com.my", "maybank2u.com.my", True),   # rn->m
+    ("docs.google.com", "docs.google.com", False),     # popular raw is trusted as-is
+    ("acesse.one", "acesse.one", False),               # ranked raw, no likelier lookalike
+])
+def test_resolve(dom, raw, host, corrected):
+    r = resolve(raw, dom, set())
+    assert (r["host"], r["corrected"]) == (host, corrected) and r["verified_by"] == "known"
+
+
+def test_resolve_flags_impossible_tld_and_uses_qr_crossref(dom):
+    assert resolve("www.ome", dom, set())["flag"] == "invalid_tld"
+    r = resolve("hackfest2O26.my", dom, {"hackfest2026.my"})
+    assert r == {**r, "host": "hackfest2026.my", "verified_by": "crossref", "corrected": True}
+    assert resolve("unknownsite.my", dom, set())["verified_by"] == "none"
+
+
+def test_candidates_prefer_fewest_edits():
+    c = candidates("docs.qoogle.com")
+    assert c["docs.google.com"] == 1 and c["d0cs.google.com"] == 2
+
+
+def test_psl_registrable():
+    psl = PSL("com\nmy\ncom.my\n*.ck\n!www.ck\n")
+    assert psl.registrable("a.b.shop.com.my") == "shop.com.my"
+    assert psl.registrable("docs.google.com") == "google.com"
+    assert psl.registrable("com.my") is None
+    assert psl.registrable("a.b.ck") == "a.b.ck" and psl.registrable("www.ck") == "www.ck"
+
+
+def test_raw_host_keeps_case_and_odd_chars():
+    assert raw_host("https://|1nk.dev/YxKdP") == "|1nk.dev" and raw_host("Inkd.in/x") == "Inkd.in"
+
+
+def _lines(*texts, h=0.017):
+    return [(t, 1.0, (0.1, 0.4 + i * 0.027, 0.8, h)) for i, t in enumerate(texts)]
+
+
+def test_wrapped_url_is_joined_and_stray_end_dropped():
+    u = find_urls_in_lines(_lines("details: https://courses.example.com.my/campai",
+                                  "gns/cloud-skills-for-your-future-", "with-partners<", "It takes 1-2 weeks"))
+    assert u[0]["url"] == "https://courses.example.com.my/campaigns/cloud-skills-for-your-future-with-partners"
+    assert u[0]["joined"] == 2
+
+
+def test_join_refuses_words_dates_and_far_lines():
+    assert find_urls_in_lines(_lines("see https://a.com/x", "Location"))[0]["joined"] == 0
+    assert find_urls_in_lines(_lines("see https://a.com/x", "11/12/2025"))[0]["joined"] == 0
+    far = [("see https://a.com/x", 1.0, (0.1, 0.1, 0.8, 0.017)), ("/more-path", 1.0, (0.1, 0.5, 0.8, 0.017))]
+    assert find_urls_in_lines(far)[0]["joined"] == 0
+
+
+def test_ellipsis_marks_truncated():
+    assert find_urls_in_lines(_lines("https://register.gotow…"))[0]["truncated"] is True

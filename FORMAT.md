@@ -5,7 +5,7 @@ vault wrapper manages an Obsidian vault. Neither imports the other. They meet
 only at the files and the JSON described here. Any future ingester (PDF, web
 clip, …) that writes this format plugs into the same wrapper.
 
-Status: draft v0.7.0 — 2026-09-23.
+Status: draft v0.8.0 — 2026-09-23.
 
 ## 1. CLI contract (both tools)
 
@@ -69,7 +69,9 @@ Rules:
 - `source_state`: `present` | `held` | `attached` | `quarantined` | `purged`. After `purged`, the note is the only record.
 - Quarantine lasts exactly 7 days to the second: `purge_after = quarantined_at + 604800 s`, UTC, ISO 8601 with seconds. Purge is eligible only when `now >= purge_after`; it still needs `--commit`.
 - `held`: the image failed the confidence gate. It is kept, never quarantined, and its clock has not started. It becomes eligible only after its confidence is raised or it is confirmed (see §6).
-- `decided_by`: `rule` | `laya` | `llm` | `user`. `verified_by`: `qr` | `crossref` | `reocr` | `dns` | `none`.
+- `decided_by`: `rule` | `laya` | `llm` | `user`. `verified_by`: `qr` | `crossref` | `known` | `none`
+  (`reocr` and `dns` reserved). URL records may also carry `corrected`, `reason`, `joined` (extra lines
+  merged) and `flag`: `truncated` | `invalid_tld` | `invalid_host`.
 - Secrets (Wi-Fi passwords) are redacted before this file is written: `"payload": "WIFI:S:home;T:WPA;P:<redacted>"`.
 - Unknown fields must be ignored by readers, never rejected.
 
@@ -111,11 +113,32 @@ Anything here is owned by the user and never touched by any tool.
 ```
 
 URL rendering rule:
-- Only QR-decoded URLs (`verified_by: qr`) are links, in the body and in `urls`.
-- OCR-read URLs are code text in the body and go in `urls_unverified` without a scheme, so neither the
-  reading view nor Obsidian's Properties panel makes them clickable. Measured reason: on the first
-  182-screenshot sample OCR produced `docs.qoogle.com`, `Inkd.in` and `|1nk.dev` — lookalike domains —
-  while Vision reported confidence 1.0 for them. Vision's line confidence is not usable for URLs.
+- Links are made only for `qr`, `crossref` and `known` URLs without a flag. Everything else is code text,
+  and sits in `urls_unverified` without a scheme so neither the reading view nor the Properties panel
+  makes it clickable.
+- A corrected URL is a link to the correction, with the raw reading and the reason beside it, and is
+  listed in `urls_corrected` as `raw -> url`. The raw reading is never discarded.
+
+URL correction (deterministic, offline after `domains update`):
+- Candidates: the raw host with up to 2 OCR-confusion substitutions (I→l, |→l/i, 1↔l, q↔g, 0↔o, rn↔m, vv→w, 5↔s, cl→d).
+- Evidence: `crossref` = the candidate's registrable domain (Public Suffix List eTLD+1) was decoded from a
+  QR code anywhere in the index or batch; `known` = it ranks in the Tranco top 1M.
+- Correct only if one candidate wins (best rank, then fewest edits; runner-up ≥ 10× worse unless same
+  domain) and it beats the raw reading by ≥ 100× in rank, or the raw is unranked or not a valid host.
+- A raw reading ranked in the top 100k is trusted as-is. Lookalikes can be real, ranked sites
+  (`inkd.in` ≈ 794k vs `lnkd.in` ≈ 2k), hence the margin rather than "raw exists → keep".
+- Known cost: a genuine phishing lookalike shown in a screenshot (`paypaI.com`) is mapped to the real
+  domain. The raw reading stays next to the link so it remains visible.
+- Hosts with a TLD that does not exist (`www.ome`, `register.gotow`) are flagged `invalid_tld`: almost always
+  cut off on screen. A URL followed by `…` is flagged `truncated`. Neither is guessed.
+- Wrapped URLs are joined across lines when the URL ends its line and the next line, in reading order and
+  within 1.5 line heights, is a single URL-shaped token (not a word, a date, or a new URL).
+- Measured on the 182-screenshot sample: 8 corrections, 0 wrong; 2 wrapped URLs fully recovered;
+  2 cut-off URLs flagged. Not recoverable: paths faded out by the browser, and OCR misreads inside a path.
+
+Reference lists: `domains update --commit` downloads Tranco top-1M, the Public Suffix List and the IANA TLD
+list into `<state>/domains/`. It is the tool's only network access and fetches reference lists only,
+never a URL read from a screenshot. Without it, correction falls back to QR crossref alone.
 
 QR types (`qr` in frontmatter, `type` in the manifest): `url`, `payment`, `wifi`, `contact`, `mailto`,
 `tel`, `smsto`, `geo`, `text`. `payment` = EMVCo merchant QR (DuitNow, PayNow, ...), accepted only if the
@@ -158,6 +181,7 @@ can see it; working state and bulky images stay out of the vault.
   quarantine/<batch_id>/     extracted images, purged 7 days after quarantined_at
   index.sqlite               hashes, text (FTS), entities, state, tombstones
   binding.json               which content root this state writes to
+  domains/                   Tranco ranks (SQLite), Public Suffix List, IANA TLDs, info.json (list id)
   journal.key                HMAC key for the journal chain (0600); losing it makes old journals unverifiable
   batches/*.jsonl            manifests (§2)
   journal/*.jsonl            every file operation, for undo

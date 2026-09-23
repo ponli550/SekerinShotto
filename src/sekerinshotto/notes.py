@@ -13,7 +13,7 @@ END = "<!-- generated:end -->"
 USER_TAIL = "\n\n## Notes\n\n"
 
 OWNED_KEYS = ["id", "ingester", "ingester_version", "source_type", "source_app", "captured_at",
-              "ingested", "status", "status_reason", "category", "decided_by", "urls", "urls_unverified", "domains",
+              "ingested", "status", "status_reason", "category", "decided_by", "urls", "urls_unverified", "urls_corrected", "domains",
               "qr", "tags"]
 WRITEBACK_KEYS = ("category", "decided_by")      # kept when a caller (llm/user/laya) decided them
 _SKIP_PKG = {"com", "org", "net", "my", "io", "co", "app", "android"}
@@ -71,17 +71,33 @@ def _fence(text: str) -> str:
     return f"{f}text\n{text}\n{f}"
 
 
+def _linkable(u: dict) -> bool:
+    return u["verified_by"] in ("qr", "known", "crossref") and not u.get("flag")
+
+
 def generated_body(ex: Extraction) -> str:
     out = [START, "## Text", _fence(ex.text) if ex.text.strip() else "_no text read_"]
     if ex.urls:
         out.append("## Links")
         for u in ex.urls:
             label = u["url"].split("://", 1)[1]
-            if u["verified_by"] == "qr":
+            vb, flag = u["verified_by"], u.get("flag")
+            if vb == "qr":
                 out.append(f"- [{label}]({u['url']}) · from QR")
+            elif flag == "truncated":
+                out.append(f"- `{u['raw']}…` · cut off on screen — not a link")
+            elif flag in ("invalid_tld", "invalid_host"):
+                out.append(f"- `{u['raw']}` · not a valid address (likely cut off) — not a link")
+            elif vb in ("known", "crossref") and u.get("corrected"):
+                # corrected to a well-ranked domain; the raw reading stays visible
+                out.append(f"- [{label}]({u['url']}) · corrected, read as `{u['raw']}` ({u['reason']})")
+            elif vb in ("known", "crossref"):
+                out.append(f"- [{label}]({u['url']}) · read by OCR, domain {vb} ({u['reason']})")
             else:
                 # OCR misreads produce lookalike domains (docs.qoogle.com); never make them clickable.
                 out.append(f"- `{u['raw']}` · read by OCR, unverified — not a link")
+            if u.get("joined"):
+                out[-1] += f" · joined across {u['joined'] + 1} lines"
     if ex.barcodes:
         out.append("## QR")
         for b in ex.barcodes:
@@ -108,9 +124,10 @@ def render(ex: Extraction, ingested: str, existing: str | None = None) -> str:
         "source_type": "image", "source_app": ex.source_app, "captured_at": ex.captured_at,
         "ingested": ingested, "status": ex.status, "status_reason": ex.status_reason,
         "category": "uncategorized", "decided_by": None,
-        "urls": [u["url"] for u in ex.urls if u["verified_by"] == "qr"],
+        "urls": [u["url"] for u in ex.urls if _linkable(u)],
         # no scheme, so Obsidian's Properties panel does not turn a misread into a link
-        "urls_unverified": [u["url"].split("://", 1)[1] for u in ex.urls if u["verified_by"] != "qr"],
+        "urls_unverified": [u["url"].split("://", 1)[1] for u in ex.urls if not _linkable(u)],
+        "urls_corrected": [f"{u['raw']} -> {u['url']}" for u in ex.urls if u.get("corrected")],
         "domains": ex.domains,
         "qr": sorted({b["type"] for b in ex.barcodes}),
         "tags": ["sekerinshotto"] + ([f"sekerinshotto/{ex.status}"] if ex.status != "ok" else []),
