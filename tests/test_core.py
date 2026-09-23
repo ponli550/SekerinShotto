@@ -637,7 +637,8 @@ def test_no_key_commits_without_a_typed_word(name):
         if "--commit" in line:
             assert key.isupper(), line                              # pan's convention: UPPERCASE = gated
             assert '[ "$a" =' in arg and arg.index("read a") < arg.index("--commit"), line
-        elif key.isalpha() and key.isupper() and len(key) == 1:
+        elif key.isalpha() and key.isupper() and len(key) == 1 and " --ask" not in arg:
+            # `--ask` = the command gates itself (tested: it cancels unless the answer is yes or a drop)
             raise AssertionError(f"uppercase key without a gated commit: {line}")
 
 
@@ -878,7 +879,7 @@ def test_side_pane_keys_run_something_that_stays_open(name):
         if len(parts) >= 4 and ("term-side" in parts[2]):
             arg = parts[3].rstrip()
             assert arg.startswith("nvim ") or arg.endswith("| less -R") or arg.endswith("-popup") \
-                or arg.endswith("--view") or "dropzone --commit" in arg, line
+                or arg.endswith("--view") or "dropzone" in arg, line
 
 
 def test_headline_prefers_query_then_terms_and_skips_noise():
@@ -922,7 +923,7 @@ def test_add_takes_shell_escaped_dropped_paths(tmp_path):
 def test_A_is_the_drop_zone_and_f_is_gone():
     keys = pv.keys_for("ss").splitlines()
     a = next(l for l in keys if l.startswith("A\t"))
-    assert "dropzone" in a and "\tterm-side\t" in a and '[ "$a" = yes ]' in a
+    assert "dropzone --ask" in a and "\tterm-side\t" in a
     assert not any(l.startswith("f\t") for l in keys)
 
 
@@ -991,3 +992,13 @@ def test_cards_use_panvims_out_side():
     for name in ("ss-audit", "ss-notes", "ss-results"):
         cards = [l for l in pv.keys_for(name).splitlines() if "sekerinshotto show {row}" in l]
         assert cards and all("\tout-side\t" in l for l in cards), cards
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Apple Vision")
+@pytest.mark.parametrize("answer,starts", [("no", False), ("", False), ("/nonexistent/x.png", False)])
+def test_dropzone_ask_cancels_without_consent(tmp_path, answer, starts):
+    import os
+    env = {**os.environ, "SEKERINSHOTTO_STATE": str(tmp_path / "st"), "SEKERINSHOTTO_CONTENT": str(tmp_path / "v")}
+    p = subprocess.run([sys.executable, "-m", "sekerinshotto.cli", "dropzone", "--ask", "--no-finder"],
+                       input=answer + "\n", capture_output=True, text=True, env=env, timeout=30)
+    assert "cancelled" in p.stdout and "DROP ZONE" not in p.stdout
