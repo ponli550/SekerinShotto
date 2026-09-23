@@ -878,7 +878,7 @@ def test_side_pane_keys_run_something_that_stays_open(name):
         if len(parts) >= 4 and ("term-side" in parts[2]):
             arg = parts[3].rstrip()
             assert arg.startswith("nvim ") or arg.endswith("| less -R") or arg.endswith("-popup") \
-                or arg.endswith(pv.VIEWER.split("|", 1)[1].strip()), line
+                or arg.endswith("--view"), line
 
 
 def test_headline_prefers_query_then_terms_and_skips_noise():
@@ -958,3 +958,18 @@ def test_card_text_hides_status_bar_and_noise():
     rec = {"chrome_top_n": 3, "chrome_bottom_n": 0}
     body, hidden = pv.content_only(rec, "4:49\n5G\n)' 23% •\n000\nRESULT AND DISCUSSIONS\n•\nWeek 14")
     assert body == ["RESULT AND DISCUSSIONS", "Week 14"] and hidden == 5
+
+
+def test_drilldown_opens_results_on_top_not_in_the_side_pane():
+    for name in ("ss", "ss-class", "ss-concepts"):
+        for line in pv.keys_for(name).splitlines():
+            if "ss-results" in line:
+                assert "panvim popup ss-results" in line and "\tterm-side\t" not in line, line
+
+
+@pytest.mark.parametrize("pkg,slug", [("ag.jup.jupiter.android", "jupiter"), ("com.whatsapp.w4b", "whatsapp"),
+                                      ("my.com.gxbank.app", "gxbank"), ("com.ss.android.ugc.trill", "trill"),
+                                      ("com.x", "x")])
+def test_app_slug(pkg, slug):
+    from sekerinshotto.notes import app_slug
+    assert app_slug(pkg) == slug
