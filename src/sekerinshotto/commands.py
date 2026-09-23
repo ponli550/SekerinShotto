@@ -1653,3 +1653,68 @@ def cmd_autoadd(a, state: State):
         routed = run_cleanup(state, state.connect(), content, True, only=ids)
     return Result({"committed": True, **plan, "written": res.data.get("written"), "routed": routed["moved"]},
                   violation=res.violation)
+
+
+# ---------------------------------------------------------------- panel quick fixes
+@command("domains allow-item", "Allow the domains holding one image back (its unverified OCR URLs)",
+         args=[Arg("id", "item id, id prefix (>= 8 hex) or note filename")],
+         writes=True,
+         details="The audit panel's D key. Finds the item's URLs still verified_by: none (and not flagged as cut "
+                 "off), allows their registrable domains, and re-verifies, which releases the image if nothing "
+                 "else holds it. Same rules and refusals as `domains allow`.")
+def cmd_domains_allow_item(a, state: State):
+    con = state.connect()
+    iid = resolve_id(con, a.id)
+    rec = json.loads(con.execute("SELECT record FROM items WHERE id=?", (iid,)).fetchone()[0])
+    hosts = sorted({u["url"].split("://", 1)[-1].split("/", 1)[0] for u in rec["entities"]["urls"]
+                    if u["verified_by"] == "none" and not u.get("flag")})
+    if not hosts:
+        raise ToolError(f"{iid[:15]} has no unverified URL to allow (held for: {rec.get('hold_reason') or 'nothing'})")
+    a.domains = ",".join(hosts)
+    return cmd_domains_allow(a, state)
+
+
+def _stopterms_file(state: State) -> Path:
+    return state.root / "stopterms.txt"
+
+
+@command("terms list", "Words kept out of key terms (<state>/stopterms.txt)")
+def cmd_terms_list(a, state: State):
+    from .terms import load_stopterms
+    return Result({"hidden": sorted(load_stopterms(state.root)), "file": str(_stopterms_file(state))})
+
+
+def _terms_edit(a, state: State, add: bool) -> Result:
+    from .terms import load_stopterms
+    word = a.term.strip().lower()
+    if not re.fullmatch(r"[a-z][a-z'-]{2,}", word):
+        raise ToolError(f"{a.term!r} is not a single word")
+    current = load_stopterms(state.root)
+    changed = (word not in current) if add else (word in current)
+    if not a.commit:
+        return Result({"committed": False, "term": word, "would_change": changed,
+                       "action": "hide" if add else "unhide"})
+    if changed:
+        new = (current | {word}) if add else (current - {word})
+        _stopterms_file(state).write_text("# words that must never become key terms (names the redactor misses)\n"
+                                          + "".join(w + "\n" for w in sorted(new)))
+    content = _content_root(state, None, required=True)
+    batch_id = now_iso().replace(":", "-") + ("-hide" if add else "-unhide")
+    with state.lock():
+        rep = apply_organization(state, state.connect(), content, state.journal(batch_id),
+                                 state.dir("batches") / f"{batch_id}.jsonl", batch_id, now_iso())
+        state.connect().commit()
+    return Result({"committed": True, "term": word, "changed": changed, "notes_rewritten": rep["notes_written"]})
+
+
+@command("terms hide", "Keep a word out of key terms everywhere (a name the redactor missed)",
+         args=[Arg("term", "the word")], writes=True,
+         details="Adds the word to <state>/stopterms.txt and re-organizes, so it leaves every note's terms and the "
+                 "concepts panel. The concepts panel's X key.")
+def cmd_terms_hide(a, state: State):
+    return _terms_edit(a, state, True)
+
+
+@command("terms unhide", "Allow a hidden word back into key terms", args=[Arg("term", "the word")], writes=True)
+def cmd_terms_unhide(a, state: State):
+    return _terms_edit(a, state, False)

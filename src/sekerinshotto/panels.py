@@ -298,7 +298,9 @@ def keys_for(name: str) -> str:
     if name == "ss-class":
         rows = ["l\tnotes in this category → results board\tterm\tsekerinshotto panel set --category {row} && panvim popup ss-results"]
     elif name == "ss-concepts":
-        rows = ["l\tnotes with this term → results board\tterm\tsekerinshotto panel set {row} && panvim popup ss-results"]
+        rows = ["l\tnotes with this term → results board\tterm\tsekerinshotto panel set {row} && panvim popup ss-results",
+                "X\tHIDE this term: a name the redactor missed (plan, then confirm)\tterm-hold\t"
+                + CONFIRM.format(cmd="terms hide {row}", word="yes")]
     elif name == "ss-groups":
         rows = ["o\topen the group or sequence hub note\tterm-side\tnvim -R \"$(sekerinshotto panel path {row})\""]
     elif name in ("ss-audit", "ss-notes", "ss-results"):
@@ -309,7 +311,9 @@ def keys_for(name: str) -> str:
                 "V\tCONFIRM this image: vouch for it (plan, then confirm)\tterm-hold\t"
                 + CONFIRM.format(cmd="confirm {row} --by user", word="yes"),
                 "K\tKEEP this image forever (plan, then confirm)\tterm-hold\t"
-                + CONFIRM.format(cmd="keep {row}", word="yes")]
+                + CONFIRM.format(cmd="keep {row}", word="yes"),
+                "D\tALLOW the domain holding this image back (plan, then confirm)\tterm-hold\t"
+                + CONFIRM.format(cmd="domains allow-item {row}", word="yes")]
     elif name == "ss-quarantine":
         rows = [_note_open(),
                 "i\topen the image\tterm\topen \"$(sekerinshotto panel image {row})\"",

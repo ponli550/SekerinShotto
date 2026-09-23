@@ -470,9 +470,9 @@ Keys follow pan's convention: lowercase = read-only; UPPERCASE runs the plan, th
 |---|---|---|
 | `ss` (visible, all ss* panels 95%×90% of the terminal) | two columns: left image states and categories with bars (Enter lists them), next purge with countdown and local time; right to-do, recent notes (app + key terms, never OCR text), top concepts, groups/sequences; header names the state and vault | h c k g a p n: panels · s search · w status · C cleanup · O organize |
 | `ss-class` | category, count, rule vs caller | l list the category |
-| `ss-concepts` | key term, notes | l notes with the term |
+| `ss-concepts` | key term, notes | l notes with the term · X hide the term (`terms hide`) |
 | `ss-groups` | group, copies, best copy | o open the hub note |
-| `ss-audit` | held/kept image, reason, tries | o note · i image · v show · R retry · V confirm · K keep |
+| `ss-audit` | held/kept image, reason, tries | o note · i image · v show · R retry · V confirm · K keep · D allow its domain |
 | `ss-quarantine` | image, countdown d/h/m/s, purge time | o note · i image · U restore · P purge due |
 | `ss-notes` | newest 300 notes | as audit |
 | `ss-results` | one row per note: id, date, category, headline | as audit; opened by `s` (search), `l` on a category or a key term |
