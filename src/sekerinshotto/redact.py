@@ -27,7 +27,7 @@ CUE_RE = re.compile(
     rf"({_NAME_WORD}(?:\s+(?:{_NAME_WORD}|bin|binti|a/l|a/p)){{0,4}})")
 # Capitalised (or ALL-CAPS) words around bin/binti/a/l/a/p, at most 4 on each side. VeriPay's version
 # was case-insensitive and unbounded, which on a long OCR line swallows the rest of the sentence.
-# Cost: an all-lowercase name in a chat ("irfan bin ali") is not caught.
+# Cost: an all-lowercase name in a chat ("ahmad bin ali") is not caught.
 PATRONYMIC_RE = re.compile(
     r"\b[A-Z][\w'@-]*(?:\s+[A-Z][\w'@-]*){0,3}\s+(?i:bin|binti|a/l|a/p)\s+"
     r"[A-Z][\w'@-]*(?:\s+[A-Z][\w'@-]*){0,3}\b")
