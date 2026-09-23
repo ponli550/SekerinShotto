@@ -152,6 +152,11 @@ def generated_body(ex: Extraction, org: dict | None = None) -> str:
         "held": f"held — {ex.hold_reason}; retried automatically, never auto-deleted",
         "purged": f"purged at {ex.purged_at}; this note is the only record",
     }.get(ex.source_state, ex.source_state))
+    if ex.copies:
+        states = {}
+        for c in ex.copies:
+            states[c.get("state", "present")] = states.get(c.get("state", "present"), 0) + 1
+        src.append("- identical copies: " + ", ".join(f"{n} {st}" for st, n in sorted(states.items())))
     out.append("\n".join(src))
     out.append(END)
     return "\n\n".join(out)
@@ -222,7 +227,7 @@ def manifest_record(ex: Extraction, batch_id: str, note_path: str, source_state:
 
 
 LIFECYCLE = ("stored_path", "quarantined_at", "purge_after", "purged_at", "attachment", "hold_reason",
-             "attempts", "keep", "confirmed_by")
+             "attempts", "keep", "confirmed_by", "copies")
 
 
 def ex_version() -> str:

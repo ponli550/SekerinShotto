@@ -449,23 +449,26 @@ def test_cleanup_purge_restore_round_trip(sample):
     src, content, env = sample
     _run("ingest", str(src), "--content", str(content), "--commit", env=env)
     code, plan = _run("cleanup", env=env)
-    assert code == 0 and plan["data"]["plan"] == {"quarantine": 1} and len(list(src.iterdir())) == 2
+    assert code == 0 and plan["data"]["plan"] == {"quarantine": 1, "copies_to_quarantine": 1}
+    assert len(list(src.iterdir())) == 2
     code, res = _run("cleanup", "--commit", env={**env, "SEKERINSHOTTO_NOW": "2026-01-01T00:00:00Z"})
-    assert code == 0 and res["data"]["moved"] == {"quarantine": 1}
-    left = [p.name for p in src.iterdir()]
-    assert left == ["copy.png"]                     # the duplicate copy was never ingested, so never moved
+    assert code == 0 and res["data"]["moved"] == {"quarantine": 1} and res["data"]["copies_quarantined"] == 1
+    assert list(src.iterdir()) == []                # the byte-identical copy went to quarantine too
     audit = (content / "AUDIT.md").read_text()
     assert "| quarantined (purged 7 days after) | 1 |" in audit
     code, pl = _run("purge", env={**env, "SEKERINSHOTTO_NOW": "2026-01-07T23:59:59Z"})
     assert pl["data"]["due"] == 0 and pl["data"]["next"][0]["seconds_left"] == 1
     note = next((content / "notes").rglob("*.md"))
     iid = note.stem.split("-")[-1]
+    note_src = "Screenshot_20260101_120000_com_android_chrome_ChromeTabbedActivity.png"
     code, r = _run("restore", iid, "--commit", env=env)
-    assert r["data"]["restored"] == 1 and len(list(src.iterdir())) == 2
+    assert r["data"]["restored"] == 1
+    assert {p.name for p in src.iterdir()} == {"copy.png", note_src}   # the copy came back with its original
     _run("cleanup", "--commit", env={**env, "SEKERINSHOTTO_NOW": "2026-01-01T00:00:00Z"})
     code, pg = _run("purge", "--commit", env={**env, "SEKERINSHOTTO_NOW": "2026-01-08T00:00:00Z"})
-    assert code == 0 and pg["data"]["purged"] == 1
-    assert "this note is the only record" in note.read_text()
+    assert code == 0 and pg["data"]["purged"] == 2 and pg["data"]["copies_purged"] == 1
+    assert "this note is the only record" in note.read_text() and "1 purged" in note.read_text()
+    assert not any((Path(env["SEKERINSHOTTO_STATE"]) / "quarantine").rglob("*.png"))
     code, again = _run("ingest", str(src), "--content", str(content), env=env)
     assert again["data"]["planned"] == 0                                     # purged hash is not resurrected
     code, bad = _run("restore", iid, env=env)

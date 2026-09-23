@@ -317,6 +317,7 @@ class Extraction:
     attempts: int = 0
     keep: bool = False
     confirmed_by: str | None = None
+    copies: list = field(default_factory=list)        # byte-identical files elsewhere: {path, state, ...}
     elapsed_ms: int = 0
 
     @property
