@@ -33,8 +33,8 @@ def query_file() -> Path:
     return Path.home() / ".cache" / "sekerinshotto" / "results.json"
 
 
-def set_query(query: str | None, category: str | None) -> dict:
-    q = {"query": (query or "").strip(), "category": category or None, "at": now_iso()}
+def set_query(query: str | None, category: str | None, state: str | None = None) -> dict:
+    q = {"query": (query or "").strip(), "category": category or None, "state": state or None, "at": now_iso()}
     f = query_file()
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_text(json.dumps(q) + "\n")
@@ -55,6 +55,74 @@ def headline(rec: dict, text: str, words: list[str]) -> str:
     if pick is None:
         pick = max(good[:15], key=len, default=(body[0] if body else ""))
     return " ".join(redact(pick)[0].split())
+
+
+STATES = ("present", "held", "attached", "quarantined", "purged")
+LEFT_W = 46
+
+
+def _bar(n: int, top: int, width: int = 14) -> str:
+    return "▇" * max(1, round(width * n / top)) if n and top else ""
+
+
+def _local(ts_utc: str) -> str:
+    from datetime import timezone
+    return parse_iso(ts_utc).replace(tzinfo=timezone.utc).astimezone().strftime("%a %d %b %H:%M")
+
+
+def _home(con, content, state_root, now) -> list[str]:
+    total = con.execute("SELECT COUNT(*) FROM items").fetchone()[0]
+    groups = con.execute("SELECT COUNT(DISTINCT group_id) FROM items WHERE group_id IS NOT NULL").fetchone()[0]
+    left = ["images · Enter lists them"]
+    st = _q(con, "SELECT source_state, COUNT(*) FROM items GROUP BY 1 ORDER BY 2 DESC")
+    top = max((n for _, n in st), default=0)
+    left += [f"  {k:<12} {n:>4}  {_bar(n, top)}" for k, n in st]
+    nxt = con.execute("SELECT MIN(purge_after) FROM items WHERE source_state='quarantined'").fetchone()[0]
+    if nxt:
+        left += ["", "next purge", f"  {countdown(int((parse_iso(nxt) - parse_iso(now)).total_seconds()))}",
+                 f"  {_local(nxt)} local"]
+    left += ["", "categories · Enter lists them"]
+    cats = _q(con, "SELECT category, COUNT(*) FROM items GROUP BY 1 ORDER BY 2 DESC, 1")
+    top = max((n for _, n in cats), default=0)
+    left += [f"  {k:<14} {n:>3}  {_bar(n, top, 12)}" for k, n in cats]
+
+    right = ["to do"]
+    uncat = con.execute("SELECT COUNT(*) FROM items WHERE category='uncategorized'").fetchone()[0]
+    held = con.execute("SELECT COUNT(*) FROM items WHERE source_state='held'").fetchone()[0]
+    present = con.execute("SELECT COUNT(*) FROM items WHERE source_state='present'").fetchone()[0]
+    todo = [(held, "held", "images held back · a = audit"),
+            (uncat, "uncategorized", "notes no rule matched · the LLM can tag them"),
+            (present, "present", "images not cleaned up yet · C = cleanup")]
+    right += [f"  {k:<14} {n:>3}  {why}" for n, k, why in todo if n] or ["  nothing to do"]
+    right += ["", "recent notes · n = all notes"]
+    # ambient panel: app and key terms only, never OCR text (headlines live on the on-demand results board)
+    for iid, cat, cap, app, rec in _q(con, """SELECT substr(id,8,8), category, captured_at, source_app, record
+            FROM items ORDER BY captured_at DESC LIMIT 8"""):
+        terms = ", ".join((json.loads(rec).get("terms") or [])[:3])
+        right.append(f"  {iid} {(cap or '')[5:10]} {cat[:9]:<9} {(app or '').split('.')[-1][:10]:<10} {terms}")
+    c = Counter()
+    for (rec,) in _q(con, "SELECT record FROM items WHERE record IS NOT NULL"):
+        c.update(json.loads(rec).get("terms") or [])
+    if c:
+        right += ["", "top concepts · k = concepts"]
+        terms = [t for t, _ in sorted(c.items(), key=lambda kv: (-kv[1], kv[0]))[:12]]
+        right += [f"  {terms[i]:<18}  {terms[i + 1] if i + 1 < len(terms) else ''}" for i in range(0, len(terms), 2)]
+    seqs = sum(1 for (r,) in _q(con, "SELECT record FROM items") if json.loads(r).get("seq_part") == 1)
+    right += ["", f"duplicate groups {groups} · scroll sequences {seqs} · g = groups"]
+
+    where = f"state {_short(state_root)} · vault {_short(content) if content else '-'}"
+    head = [f"SekerinShotto · {total} notes · {where}", ""]
+    rows = max(len(left), len(right))
+    left += [""] * (rows - len(left))
+    right += [""] * (rows - len(right))
+    return head + [f"{l:<{LEFT_W}}{r}".rstrip() for l, r in zip(left, right)]
+
+
+def _short(p) -> str:
+    try:
+        return "~/" + str(Path(p).relative_to(Path.home()))
+    except ValueError:
+        return str(p)
 
 
 def countdown(seconds: int) -> str:
@@ -89,20 +157,7 @@ def render(view: str, con, content: Path | None, state_root: Path, category: str
         return "SekerinShotto — no screenshots yet\n\nRun: sekerinshotto ingest <folder> --commit\n"
     out = []
     if view == "home":
-        groups = con.execute("SELECT COUNT(DISTINCT group_id) FROM items WHERE group_id IS NOT NULL").fetchone()[0]
-        out += [f"SekerinShotto · {total} notes · {groups} groups", ""]
-        out.append("images")
-        for st, n in _q(con, "SELECT source_state, COUNT(*) FROM items GROUP BY 1 ORDER BY 2 DESC"):
-            out.append(f"  {st:<12} {n:>5}")
-        nxt = con.execute("SELECT MIN(purge_after) FROM items WHERE source_state='quarantined'").fetchone()[0]
-        if nxt:
-            out += ["", f"next purge   {nxt}  ({countdown(int((parse_iso(nxt) - parse_iso(now)).total_seconds()))})"]
-        out += ["", "categories"]
-        for cat, n in _q(con, "SELECT category, COUNT(*) FROM items GROUP BY 1 ORDER BY 2 DESC, 1"):
-            out.append(f"  {cat:<14} {n:>5}")
-        uncat = con.execute("SELECT COUNT(*) FROM items WHERE category='uncategorized'").fetchone()[0]
-        held = con.execute("SELECT COUNT(*) FROM items WHERE source_state='held'").fetchone()[0]
-        out += ["", f"to do        {uncat} uncategorized (LLM can tag) · {held} held (see audit)"]
+        out = _home(con, content, state_root, now)
     elif view == "class":
         out += ["categories · rule vs caller decisions", ""]
         for cat, n, rules, callers in _q(con, """SELECT category, COUNT(*), SUM(decided_by='rule'),
@@ -152,6 +207,8 @@ def render(view: str, con, content: Path | None, state_root: Path, category: str
         where, params = ["i.record IS NOT NULL"], []
         if q.get("category"):
             where.append("i.category = ?"); params.append(q["category"])
+        if q.get("state"):
+            where.append("i.source_state = ?"); params.append(q["state"])
         if words:
             fts = " ".join('"' + w.replace('"', "") + '"' for w in words)
             rows = _q(con, f"""SELECT i.id, i.record, i.category, i.captured_at, f.text FROM text_fts f
@@ -161,7 +218,8 @@ def render(view: str, con, content: Path | None, state_root: Path, category: str
             rows = _q(con, f"""SELECT i.id, i.record, i.category, i.captured_at, f.text FROM items i
                     JOIN text_fts f ON f.id = i.id WHERE {' AND '.join(where)}
                     ORDER BY i.captured_at DESC LIMIT 200""", params)
-        label = " · ".join(x for x in (f"'{q.get('query')}'" if words else "", q.get("category") or "") if x)
+        label = " · ".join(x for x in (f"'{q.get('query')}'" if words else "", q.get("category") or "",
+                                        f"images {q['state']}" if q.get("state") else "") if x)
         out += [f"{len(rows)} notes · {label or 'all'}  (o note · v card · i image)", ""]
         for iid, rec, cat, cap, text in rows:
             r = json.loads(rec)
@@ -214,6 +272,9 @@ def keys_for(name: str) -> str:
           "O\tORGANIZE: re-apply rules (plan, then confirm)\tterm-hold\t" + CONFIRM.format(cmd="organize", word="yes"),
           "q\tquit\tquit"]
     rows: list[str] = []
+    direct = {"ss": LIST_ENTER, "ss-class": LIST_ENTER, "ss-concepts": LIST_ENTER,
+              "ss-audit": CARD_ENTER, "ss-notes": CARD_ENTER, "ss-results": CARD_ENTER,
+              "ss-quarantine": CARD_ENTER}.get(name)
     if name == "ss-class":
         rows = ["l\tnotes in this category → results board\tterm-side\tsekerinshotto panel set --category {row} && ss-results-popup"]
     elif name == "ss-concepts":
@@ -235,7 +296,9 @@ def keys_for(name: str) -> str:
                 "U\tRESTORE this image (plan, then confirm)\tterm-hold\t" + CONFIRM.format(cmd="restore {row}", word="yes"),
                 "P\tPURGE images that are due (plan, then type purge)\tterm-hold\t"
                 + CONFIRM.format(cmd="purge", word="purge")]
-    return "\n".join(g + (["[row]"] + rows if rows else [])) + "\n"
+    if name == "ss":
+        rows = ["l\tlist this category or image state\tterm-side\tsekerinshotto panel set-row {row} && ss-results-popup"]
+    return "\n".join(g + (["[row]"] + rows if rows else []) + (["[direct]", direct] if direct else [])) + "\n"
 
 
 SYNTAX = """# GENERATED by `sekerinshotto panels install`. Roles from ~/.config/panvim/theme.conf.
@@ -324,3 +387,16 @@ def _sync_registry_titles(registry: Path) -> list[str]:
     if fixed:
         registry.write_text("".join(out))
     return fixed
+
+
+def set_row(con, row: str) -> dict:
+    """What Enter on a board row means: an image state or a category -> list; anything else -> search."""
+    if row in STATES:
+        return set_query(None, None, row)
+    if con.execute("SELECT 1 FROM items WHERE category=? LIMIT 1", (row,)).fetchone():
+        return set_query(None, row)
+    return set_query(row, None)
+
+
+LIST_ENTER = "<CR>\tEnter: open as a results board\tterm-side\tsekerinshotto panel set-row {row} && ss-results-popup"
+CARD_ENTER = "<CR>\tEnter: the item card (redacted)\tterm-side\tsekerinshotto show {row} | less -R"

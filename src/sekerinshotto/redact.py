@@ -50,6 +50,14 @@ PATRONYMIC_RE = re.compile(
     r"[A-Z][\w'@-]*(?:\s+[A-Z][\w'@-]*){0,3}\b")
 
 
+# Bare names with no cue, anchored on a common Malaysian given/honorific first name. Narrows (does not close)
+# the bare-name gap: "Mohamad Zarif Iman" in a call roster. Up to 3 more capitalised words.
+GIVEN = ("Muhammad|Muhamad|Mohammad|Mohamad|Mohammed|Mohd|Muhd|Ahmad|Abdul|Abd|Nur|Nurul|Nor|Noor|Siti|"
+         "Wan|Nik|Tengku|Tunku|Syed|Sharifah|Puteri|Megat|Raja|Nurin|Nurfarah|Aisyah|Aishah|Fatimah|Khairul|"
+         "Hafiz|Hafizah|Amirul|Aiman|Izzat|Syafiq|Farah|Nabila|Aina|Balqis")
+GIVEN_RE = re.compile(rf"\b(?:{GIVEN})\b(?:\s+[A-Z][\w'.-]*){{1,3}}")
+
+
 def _valid_ic_date(m: re.Match) -> bool:
     """First six NRIC digits must be a plausible YYMMDD, so reference numbers shaped like
     123456-78-9012 are not redacted."""
@@ -89,6 +97,8 @@ def _redact_line(text: str) -> tuple[str, int]:
     text, n = HONORIFIC_RE.subn("[NAME]", text)
     count += n
     text, n = PATRONYMIC_RE.subn("[NAME]", text)
+    count += n
+    text, n = GIVEN_RE.subn("[NAME]", text)
     count += n
     hits = 0
 

@@ -499,6 +499,8 @@ from sekerinshotto.commands import _fts_query
     ("Dr. Siti Aminah", "[NAME]"),
     ("Muhammad Amirul Aziz bin Hassan paid", "[NAME] paid"),  # bounded: the sentence survives
     ("NUR ALIA BINTI OSMAN", "[NAME]"),
+    ("Mohamad Zarif Iman joined", "[NAME] joined"),                  # bare roster name, given-name anchored
+    ("Nur Aisyah Rahman", "[NAME]"),
     ("mail a.b@um.edu.my", "mail [EMAIL]"),
     ("Invoice 2024 total RM 50", "Invoice 2024 total RM 50"),
 ])
@@ -871,3 +873,21 @@ def test_headline_prefers_query_then_terms_and_skips_noise():
     assert pv.headline(rec, text, []) == "Join our workshop on data this Friday"          # key term wins
     assert pv.headline(rec, text, ["delivery"]) == "Get live updates and track your delivery now"
     assert pv.headline({"chrome_top_n": 0}, "Call +60 12-256 7486 today please", []) == "Call [PHONE] today please"
+
+
+def test_names_never_become_key_terms():
+    texts = {"a": "Mohamad Zarif Iman joined the cohort workshop. Mohamad said hi",
+             "b": "Mohamad Zarif Iman cohort briefing",
+             "c": "cohort planning notes", "d": "workshop agenda", "e": "misc", "f": "other", "g": "x", "h": "y",
+             "i": "zzz", "j": "qqq", "k": "www", "l": "vvv"}
+    allterms = {t for v in key_terms(texts).values() for t in v}
+    assert not allterms & {"mohamad", "zarif", "iman"} and "cohort" in allterms
+
+
+def test_stopterms_file_excludes_words(tmp_path):
+    from sekerinshotto.terms import load_stopterms
+    (tmp_path / "stopterms.txt").write_text("# names\nAfif\n")
+    texts = {k: v for k, v in {"a": "afif cohort", "b": "afif cohort", "c": "x", "d": "y", "e": "z", "f": "w",
+                              "g": "v", "h": "u", "i": "t"}.items()}
+    assert "afif" in {t for v in key_terms(texts).values() for t in v}
+    assert "afif" not in {t for v in key_terms(texts, load_stopterms(tmp_path)).values() for t in v}
