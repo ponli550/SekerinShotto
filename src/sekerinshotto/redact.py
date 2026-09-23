@@ -65,14 +65,45 @@ def _valid_ic_date(m: re.Match) -> bool:
     return 1 <= int(d[2:4]) <= 12 and 1 <= int(d[4:6]) <= 31
 
 
+# Profile author lines (LinkedIn, Instagram, Teams): "Norhasliza Yusof" alone on a line, followed within two
+# lines by a connection marker or a job title. The name has no cue of its own; the context gives it away.
+NAME_LINE_RE = re.compile(r"^\s*(?:[A-Z][a-z'.-]+|[A-Z]{2,})(?:\s+(?:[A-Z][a-z'.-]+|[A-Z]{2,}|bin|binti|a/[lp])){1,3}\s*[•·]?\s*$")
+PROFILE_NEXT_RE = re.compile(
+    r"^\s*[•·]?\s*(?:1st|2nd|3rd\+?)\b|\b(?:Lecturer|Professor|Engineer|Manager|Director|Student|Intern|Developer|"
+    r"Analyst|Officer|Executive|Founder|CEO|CTO|COO|Specialist|Consultant|Researcher|Scientist|Designer|Head of|"
+    r"Pensyarah|Pengurus|Pelajar)\b|\s@\s|^\s*(?:Follow|Connect|Author)\s*$", re.IGNORECASE)
+
+
+NOT_A_NAME_RE = re.compile(
+    r"(?i)\b(program|programme|express|stack|services?|sdn|bhd|team|group|university|universiti|academy|club|"
+    r"centre|center|department|jabatan|workshop|company|studio|labs?|school|college|kolej|official|news|"
+    r"project|system|systems|solutions|digital|media|global|network|community|society|foundation)\b")
+
+
+def _profile_names(lines: list[str]) -> set[int]:
+    """Indexes of lines that are a person's name by context: next non-empty lines carry a profile marker."""
+    hits = set()
+    for i, line in enumerate(lines):
+        if not NAME_LINE_RE.match(line) or len(line.split()) > 5 or NOT_A_NAME_RE.search(line):
+            continue
+        nxt = [l for l in lines[i + 1:i + 4] if l.strip() and l.strip() not in ("•", "·")][:1]
+        if nxt and PROFILE_NEXT_RE.search(nxt[0]):          # the very next meaningful line, not two ahead
+            hits.add(i)
+    return hits
+
+
 def redact(text: str) -> tuple[str, int]:
     """(clean_text, items_redacted). Line structure is preserved."""
     if not text:
         return text, 0
     out, count = [], 0
     cont_left, prev_comma = 0, False
-    for line in text.split("\n"):
+    raw_lines = text.split("\n")
+    names = _profile_names(raw_lines)
+    for idx, line in enumerate(raw_lines):
         red, n = _redact_line(line)
+        if idx in names and "[NAME]" not in red:
+            red, n = "[NAME]", n + 1
         if "[ADDRESS]" in red:
             cont_left, prev_comma = ADDR_MAX_CONT, red.rstrip().endswith(",")
         elif cont_left and line.strip() and not ADDR_STOP_RE.search(line) and (

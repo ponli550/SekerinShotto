@@ -41,6 +41,15 @@ def set_query(query: str | None, category: str | None, state: str | None = None)
     return q
 
 
+def content_only(rec: dict, text: str) -> tuple[list[str], int]:
+    """Lines of the content area, without status/gesture-bar lines, clocks, and bare symbols."""
+    lines = text.split("\n") if text else []
+    top, bottom = rec.get("chrome_top_n") or 0, rec.get("chrome_bottom_n") or 0
+    body = lines[top:len(lines) - bottom if bottom else None]
+    keep = [l for l in body if l.strip() and not _CLOCKISH.match(l.strip()) and re.search(r"[A-Za-z]{2}", l)]
+    return keep, len(lines) - len(keep)
+
+
 def headline(rec: dict, text: str, words: list[str]) -> str:
     """The line worth reading: the first content line containing a query word, else the longest
     informative line among the first 15. Status bar, clocks and UI words are skipped. Redacted."""
@@ -293,7 +302,7 @@ def keys_for(name: str) -> str:
     elif name in ("ss-audit", "ss-notes", "ss-results"):
         rows = [_note_open(),
                 "i\topen the image\tterm\topen \"$(sekerinshotto panel image {row})\"",
-                "v\tshow the item (redacted)\tterm-side\tsekerinshotto show {row}" + PAGER,
+                "v\tshow the item card (redacted)\tterm-side\tsekerinshotto show {row}" + VIEWER,
                 "R\tRETRY held images (plan, then confirm)\tterm-hold\t" + CONFIRM.format(cmd="retry", word="yes"),
                 "V\tCONFIRM this image: vouch for it (plan, then confirm)\tterm-hold\t"
                 + CONFIRM.format(cmd="confirm {row} --by user", word="yes"),
@@ -408,4 +417,7 @@ def set_row(con, row: str) -> dict:
 
 
 LIST_ENTER = "<CR>\tEnter: open as a results board\tterm-side\tsekerinshotto panel set-row {row} && ss-results-popup"
-CARD_ENTER = "<CR>\tEnter: the item card (redacted)\tterm-side\tsekerinshotto show {row} | less -R"
+# Cards open in read-only nvim reading stdin: top-aligned, wrapped, `/` search, q closes. (less inside
+# panvim's terminal pane rendered bottom-aligned.)
+VIEWER = " | nvim -R -n -c 'set nonumber norelativenumber signcolumn=no wrap linebreak | nnoremap <buffer> q :qa!<CR>' -"
+CARD_ENTER = "<CR>\tEnter: the item card (redacted)\tterm-side\tsekerinshotto show {row}" + VIEWER

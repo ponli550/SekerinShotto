@@ -877,7 +877,8 @@ def test_side_pane_keys_run_something_that_stays_open(name):
         parts = line.split("\t")
         if len(parts) >= 4 and ("term-side" in parts[2]):
             arg = parts[3].rstrip()
-            assert arg.startswith("nvim ") or arg.endswith("| less -R") or arg.endswith("-popup"), line
+            assert arg.startswith("nvim ") or arg.endswith("| less -R") or arg.endswith("-popup") \
+                or arg.endswith(pv.VIEWER.split("|", 1)[1].strip()), line
 
 
 def test_headline_prefers_query_then_terms_and_skips_noise():
@@ -943,3 +944,17 @@ def test_upsert_updates_every_descriptive_column(tmp_path):
            "2026-01-02T00:00:00Z")
     row = con.execute("SELECT source_app, captured_at, width, added_at FROM items").fetchone()
     assert tuple(row) == ("com.whatsapp", "2026-08-10T16:26:05", 9, "2026-01-01T00:00:00Z")   # added_at set once
+
+
+def test_profile_author_line_is_redacted_by_context():
+    text = "4:49\n5G\nRESULT AND DISCUSSIONS\n•\nNorhasliza Yusof\n• 1st\nSenior Lecturer University of Malaya\nWeek 14"
+    out = redact(text)[0].split("\n")
+    assert out[4] == "[NAME]" and "RESULT AND DISCUSSIONS" in out          # heading is not a name here
+    assert redact("Academic Calendar\nDate Time Activity")[0] == "Academic Calendar\nDate Time Activity"
+    assert redact("Industry Mentorship Program\nManager track")[0].startswith("Industry Mentorship Program")
+
+
+def test_card_text_hides_status_bar_and_noise():
+    rec = {"chrome_top_n": 3, "chrome_bottom_n": 0}
+    body, hidden = pv.content_only(rec, "4:49\n5G\n)' 23% •\n000\nRESULT AND DISCUSSIONS\n•\nWeek 14")
+    assert body == ["RESULT AND DISCUSSIONS", "Week 14"] and hidden == 5
