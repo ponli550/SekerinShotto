@@ -1,0 +1,20 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# SekerinShotto runtime state never belongs in the repo
+.sekerinshotto/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# local test images
+samples/private/
