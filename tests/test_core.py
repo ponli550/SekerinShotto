@@ -1019,3 +1019,15 @@ def test_native_stdout_noise_cannot_corrupt_the_envelope(tmp_path):
     p = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                        env={**os.environ, "SEKERINSHOTTO_STATE": str(tmp_path / "s")})
     assert json.loads(p.stdout)["ok"] is True and "E5RT noise" in p.stderr
+
+
+def test_heic_photos_get_fingerprint_and_metrics(tmp_path):
+    from sekerinshotto.extract import _pil, dhash_of, fallback_date, visual_metrics
+    img = Image.new("RGB", (600, 1200), "white")
+    ImageDraw.Draw(img).rectangle((50, 300, 550, 900), fill="navy")
+    _pil()                                                     # registers the HEIF opener
+    p = tmp_path / "IMG_0001.heic"
+    img.save(p, format="HEIF")
+    assert dhash_of(p) is not None
+    assert visual_metrics(p, [])["grays"] > 0
+    assert fallback_date(p) is not None
