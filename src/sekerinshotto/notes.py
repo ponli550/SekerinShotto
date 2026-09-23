@@ -14,7 +14,7 @@ USER_TAIL = "\n\n## Notes\n\n"
 
 OWNED_KEYS = ["id", "ingester", "ingester_version", "source_type", "source_app", "captured_at",
               "ingested", "status", "status_reason", "category", "decided_by", "urls", "urls_unverified", "urls_corrected", "domains",
-              "qr", "group", "rank", "group_size", "members", "source_state", "purge_after", "decided_evidence",
+              "qr", "group", "rank", "group_size", "members", "source_state", "purge_after", "decided_evidence", "terms",
               "tags"]
 WRITEBACK_KEYS = ("category", "decided_by", "decided_evidence")   # kept when a caller decided them
 WRITEBACK_BY = ("llm", "user", "laya")
@@ -165,6 +165,7 @@ def render(ex: Extraction, ingested: str, existing: str | None = None, org: dict
         "ingested": ingested, "status": ex.status, "status_reason": ex.status_reason,
         "category": org["category"], "decided_by": org.get("decided_by"),
         "group": org.get("group"), "rank": org.get("rank"), "group_size": org.get("size"),
+        "terms": org.get("terms") or [],
         "urls": [u["url"] for u in ex.urls if _linkable(u)],
         # no scheme, so Obsidian's Properties panel does not turn a misread into a link
         "urls_unverified": [u["url"].split("://", 1)[1] for u in ex.urls if not _linkable(u)],
@@ -208,6 +209,7 @@ def manifest_record(ex: Extraction, batch_id: str, note_path: str, source_state:
         "source_app": ex.source_app, "captured_at": ex.captured_at,
         "category": org["category"], "decided_by": org.get("decided_by"), "why": org.get("why"),
         "group": org.get("group"), "rank": org.get("rank"), "group_size": org.get("size"),
+        "terms": org.get("terms") or [],
         "status": ex.status, "status_reason": ex.status_reason,
         "entities": {"qr": ex.barcodes, "urls": ex.urls, "domains": ex.domains},
         "text_chars": len(ex.text), "ocr_confidence": ex.ocr_confidence,

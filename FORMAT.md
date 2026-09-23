@@ -5,7 +5,7 @@ vault wrapper manages an Obsidian vault. Neither imports the other. They meet
 only at the files and the JSON described here. Any future ingester (PDF, web
 clip, …) that writes this format plugs into the same wrapper.
 
-Status: draft v0.12.0 — 2026-09-23.
+Status: draft v0.13.0 — 2026-09-23.
 
 ## 1. CLI contract (both tools)
 
@@ -356,34 +356,36 @@ Commands:
   override it. Grounding pattern adapted from VeriPay `_fact_in_source()`.
 - IDs everywhere accept a full id, a ≥ 8-hex prefix, or a note filename; ambiguity is an error.
 
-## 8. Panels (human surface, via panvim)
+## 8. Panels (human surface, via panvim) — implemented
 
 Two surfaces, same data: `--json` for the calling LLM, panvim panels for the user. SekerinShotto never
-depends on panvim; panels are registry rows (`~/.config/panvim/popups.conf`) + keys files that call it.
+depends on panvim; `panels install --commit` creates the registry rows, wrappers and key maps with
+`panvim new`, then runs `panvim audit`.
 
-Mechanism (panvim's, not ours): a panel re-runs its render command every `--interval` seconds into
-`$PANVIM_OUT`; `--row` is a Lua pattern that pulls an id from the cursor line; key actions substitute `{row}`.
+Render contract (`sekerinshotto panel <view>`):
+- Reads the index only (≈ 70 ms per render on the sample, Python start-up included); never extraction or
+  Laya, because panvim re-runs it on a timer, unattended.
+- Ambient-safe: counts, categories, key terms, reasons and note names only; never OCR text or QR payloads
+  (a panel stays on screen, screen shares included). Text is behind a key, redacted.
+- Row lines start with two spaces and an id; `--row '^  (%S+)'`. `panel path ID` and `panel image ID`
+  print paths for keys that open a note or an image.
 
-Render contract:
-- `sekerinshotto panel <view>` prints plain aligned text, one item per line, id first (short hash, category
-  or term) so `--row` can match it.
-- Renderers read the index only, never OCR or Laya: a render runs every few seconds and must finish in
-  well under 100 ms at 10k+ notes.
-- Writes from keys go plan-first: the key runs the dry-run in `term-hold`, a second key commits.
-  Purge never has a one-key commit.
+Keys follow pan's convention: lowercase = read-only; UPPERCASE runs the plan, then asks the user to type
+`yes` (`purge` for purge) before committing. No key passes `--commit` on its own; a test enforces it.
 
-| Panel | Rows | Keys (sketch) |
+| Panel | Rows | Keys |
 |---|---|---|
-| `ss` home | batch status, counts per outcome, held size, next purge | `popup` to every panel below; run extract (plan, then commit) |
-| `ss-class` | category, count, decided_by mix | open notes list filtered to category |
-| `ss-concepts` | key term / concept, note count, linked concept note | open concept note; `stdin:` ask Laya about this term |
-| `ss-groups` | duplicate group, members, rank-1 pick | open group hub note |
-| `ss-audit` | failed/visual image, reason, attempts | open image, open note, retry (plan → commit), confirm |
-| `ss-quarantine` | image, purge countdown to the second | restore (plan → commit), purge due (plan → commit) |
-| `ss-notes` | note, category, domains | open note beside the board, `open` its URL |
+| `ss` (visible) | image states, next purge countdown, categories, to-do counts | h c k g a p n: panels · s search · w status · C cleanup · O organize |
+| `ss-class` | category, count, rule vs caller | l list the category |
+| `ss-concepts` | key term, notes | l notes with the term |
+| `ss-groups` | group, copies, best copy | o open the hub note |
+| `ss-audit` | held/kept image, reason, tries | o note · i image · v show · R retry · V confirm · K keep |
+| `ss-quarantine` | image, countdown d/h/m/s, purge time | o note · i image · U restore · P purge due |
+| `ss-notes` | newest 300 notes | as audit |
 
-Panels are scaffolded with `panvim new NAME --render ...` (dry run, then `--commit`) only once the
-`panel` subcommand exists; a registry row pointing at a missing command would break `panvim popups`.
+Key terms (`terms` in frontmatter and records): TF-IDF over the collection, English, Malay and app-UI
+stopwords, a term must be in ≥ 2 notes and ≤ 25 % of them, top 5 per note, ties alphabetical. Statistical
+handles for concepts; naming and linking concepts stays with the LLM.
 
 ## 9. Decided, pending evidence
 

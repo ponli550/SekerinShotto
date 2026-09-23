@@ -99,6 +99,9 @@ def emit(env: dict, as_json: bool) -> None:
     if not env["ok"]:
         sys.stderr.write(f"error: {env['error']}\n")
         return
+    if isinstance(env["data"], dict) and "_text" in env["data"]:
+        sys.stdout.write(env["data"]["_text"])            # panels: plain text for panvim
+        return
     _human(env["data"])
 
 
