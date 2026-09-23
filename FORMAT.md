@@ -5,7 +5,7 @@ vault wrapper manages an Obsidian vault. Neither imports the other. They meet
 only at the files and the JSON described here. Any future ingester (PDF, web
 clip, …) that writes this format plugs into the same wrapper.
 
-Status: draft v0.19.0 — 2026-09-23.
+Status: draft v0.20.0 — 2026-09-23.
 
 ## 1. CLI contract (both tools)
 
@@ -410,7 +410,12 @@ Render contract (`sekerinshotto panel <view>`):
 - Row lines start with two spaces and an id; `--row '^  (%S+)'`. `panel path ID` and `panel image ID`
   print paths for keys that open a note or an image.
 
-Side-pane keys that only print (`list`, `search`, `show`) are piped into `less -R`: panvim's `term-side`
+Search and lists open `ss-results`, a nested board in the side pane: `panel set QUERY [--category C]`
+records what it shows (a UI setting in `~/.cache/sekerinshotto/results.json`, not data), then the board
+renders one row per note with a headline — the first content line containing a query word, else one
+containing a key term, else the longest informative line; status bar, clocks and UI words skipped;
+redacted. `show` renders a card (category and why, image state, group, terms, links, QR, text).
+Side-pane keys that only print (`show`) are piped into `less -R`: panvim's `term-side`
 closes its pane when the command exits, which made them flash and vanish. Titles are `[A-Za-z0-9_-]+`
 (`panvim new` writes them unquoted and `panvim audit` only matches that form); `panels install` repairs
 older wrappers and syncs the registry title column of `ss*` rows only.
@@ -427,6 +432,7 @@ Keys follow pan's convention: lowercase = read-only; UPPERCASE runs the plan, th
 | `ss-audit` | held/kept image, reason, tries | o note · i image · v show · R retry · V confirm · K keep |
 | `ss-quarantine` | image, countdown d/h/m/s, purge time | o note · i image · U restore · P purge due |
 | `ss-notes` | newest 300 notes | as audit |
+| `ss-results` | one row per note: id, date, category, headline | as audit; opened by `s` (search), `l` on a category or a key term |
 
 Key terms (`terms` in frontmatter and records): TF-IDF over the collection, English, Malay and app-UI
 stopwords, a term must be in ≥ 2 notes and ≤ 25 % of them, top 5 per note, ties alphabetical. Statistical

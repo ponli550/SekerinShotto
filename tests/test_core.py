@@ -861,4 +861,13 @@ def test_side_pane_keys_run_something_that_stays_open(name):
     for line in pv.keys_for(name).splitlines():
         parts = line.split("\t")
         if len(parts) >= 4 and ("term-side" in parts[2]):
-            assert parts[3].startswith("nvim ") or parts[3].rstrip().endswith("| less -R"), line
+            arg = parts[3].rstrip()
+            assert arg.startswith("nvim ") or arg.endswith("| less -R") or arg.endswith("-popup"), line
+
+
+def test_headline_prefers_query_then_terms_and_skips_noise():
+    rec = {"chrome_top_n": 2, "chrome_bottom_n": 0, "terms": ["workshop"]}
+    text = "11:58\n43%\nFollow\n12:03 pm\nGet live updates and track your delivery now\nJoin our workshop on data this Friday\nReply"
+    assert pv.headline(rec, text, []) == "Join our workshop on data this Friday"          # key term wins
+    assert pv.headline(rec, text, ["delivery"]) == "Get live updates and track your delivery now"
+    assert pv.headline({"chrome_top_n": 0}, "Call +60 12-256 7486 today please", []) == "Call [PHONE] today please"

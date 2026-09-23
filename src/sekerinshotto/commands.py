@@ -881,6 +881,23 @@ def cmd_show(a, state: State):
              if u.get(k) not in (None, False, 0)} for u in rec["entities"]["urls"]]
     for u in urls:
         u["raw"] = redact(u["raw"])[0]
+    card = [f"{iid.split(':')[1][:8]} · {r['category']} · {(r['captured_at'] or '')[:16].replace('T', ' ')} · "
+            f"{(r['source_app'] or '').split('.')[-1]}", f"why: {r['why'] or '-'}",
+            f"image: {r['source_state']}" + (f" (purge after {r['purge_after']})" if r["purge_after"] else "")
+            + (f" · held: {r['hold_reason']}" if r["hold_reason"] else "")]
+    if r["group_id"]:
+        card.append(f"group: {r['group_id']} · rank {r['rank']} of {r['group_size']}")
+    if rec.get("terms"):
+        card.append("terms: " + ", ".join(rec["terms"]))
+    if urls:
+        card += ["", "links:"] + [f"  {u['url']}  [{u['verified_by']}{', corrected' if u.get('corrected') else ''}"
+                                  f"{', ' + u['flag'] if u.get('flag') else ''}]" for u in urls]
+    qrs = [redact_qr(q) for q in rec["entities"]["qr"]]
+    if qrs:
+        card += ["", "qr:"] + [f"  {q['type']}: {q['payload'][:80]}" for q in qrs]
+    body = [l for l in text.split("\n") if l.strip()]
+    card += ["", f"text (redacted, {n} removed):", ""] + [f"  {l}" for l in body] + ["", f"note: {r['note_path']}"]
+    human = "\n".join(card) + "\n"
     return Result({"id": iid, "note": r["note_path"], "text": text, "redactions": n,
                    "urls": urls, "qr": [redact_qr(q) for q in rec["entities"]["qr"]],
                    "domains": rec["entities"]["domains"],
@@ -888,7 +905,7 @@ def cmd_show(a, state: State):
                    "group": r["group_id"], "rank": r["rank"], "group_size": r["group_size"],
                    "app": r["source_app"], "captured_at": r["captured_at"], "status": r["status"],
                    "source_state": r["source_state"], "purge_after": r["purge_after"],
-                   "hold_reason": r["hold_reason"]})
+                   "hold_reason": r["hold_reason"]}, human=human)
 
 
 def _norm(s: str) -> str:
@@ -1081,16 +1098,20 @@ from . import panels as pv  # noqa: E402
 
 
 @command("panel", "Render one read-only panvim panel (counts, reasons, names; never OCR text)",
-         args=[Arg("view", "home | class | concepts | groups | audit | quarantine | notes | path | image"),
+         args=[Arg("view", "home | class | concepts | groups | audit | quarantine | notes | results | set | path | image"),
                Arg("id", "for path/image: an item id / prefix / note filename, or a group id", required=False),
                Arg("--category", "notes view: only this category")],
          details="What panvim runs on its timer. Reads the index only, never extraction or Laya. "
-                 "`panel path ID` prints a note's absolute path, `panel image ID` the image's current path.")
+                 "`panel set QUERY [--category C]` chooses what the results view shows (a UI setting in "
+                 "~/.cache/sekerinshotto, not data). `panel path ID` / `panel image ID` print paths.")
 def cmd_panel(a, state: State):
     if not state.exists:
         return Result({"_text": "SekerinShotto — not initialised\n\nRun: sekerinshotto ingest <folder> --content <vault folder> --commit\n"})
     con = state.connect()
     content = _content_root(state, None, required=False)
+    if a.view == "set":
+        q = pv.set_query(a.id, a.category)
+        return Result({"_text": f"results: {q['query'] or '*'}{' in ' + q['category'] if q['category'] else ''}\n"})
     if a.view in ("path", "image"):
         if not a.id:
             raise ToolError(f"panel {a.view} needs an id")
