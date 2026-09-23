@@ -1089,3 +1089,26 @@ def test_terms_hide_and_unhide(tmp_path):
     assert _run("terms", "list", env=env)[1]["data"]["hidden"] == ["afif"]
     assert _run("terms", "unhide", "afif", "--commit", env=env)[1]["data"]["changed"] is True
     assert _run("terms", "list", env=env)[1]["data"]["hidden"] == []
+
+
+def test_rule_suggestions_are_conservative(tmp_path):
+    from sekerinshotto.commands import _index, _rule_suggestions
+    st = _State(tmp_path / "st")
+    con = st.connect()
+    def put(i, app, domains, cat, by):
+        rec = {"id": f"sha256:{i:064x}", "source_path": f"/x/{i}.png", "source_app": app, "captured_at": None,
+               "width": 1, "height": 1, "bytes": 1, "source_state": "present", "status": "ok", "status_reason": None,
+               "ocr_confidence": 1.0, "text_chars": 0, "note_path": f"n{i}.md", "batch_id": "b",
+               "entities": {"qr": [], "urls": [], "domains": domains}, "category": cat, "decided_by": by}
+        _index(con, rec, "", "2026-01-01T00:00:00Z")
+    put(1, "com.a", ["luma.com"], "event", "llm")
+    put(2, "com.a", ["luma.com"], "event", "llm")
+    put(3, "com.whatsapp", [], "event", "llm")                  # 2 of 10 WhatsApp notes: no app rule
+    put(4, "com.whatsapp", [], "event", "llm")
+    for i in range(5, 13):
+        put(i, "com.whatsapp", [], "chat", "rule")
+    put(13, "com.b", ["mixed.my"], "event", "llm")               # callers disagree: no domain rule
+    put(14, "com.b", ["mixed.my"], "shopping", "llm")
+    con.commit()
+    sug = _rule_suggestions(st, con, 2)
+    assert [(s["kind"], s["value"], s["category"]) for s in sug] == [("domain", "luma.com", "event")]
