@@ -1,0 +1,21 @@
+[project]
+name = "sekerinshotto"
+version = "0.1.0"
+description = "Deterministic screenshot extractor: OCR, QR, URLs to Markdown notes, agent-driven via schema --json"
+requires-python = ">=3.12"
+dependencies = [
+  "pyobjc-framework-Vision>=11",
+  "pyobjc-framework-Quartz>=11",
+  "zxing-cpp>=2.3",
+  "Pillow>=11",
+]
+
+[project.scripts]
+sekerinshotto = "sekerinshotto.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
