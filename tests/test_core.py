@@ -1031,3 +1031,12 @@ def test_heic_photos_get_fingerprint_and_metrics(tmp_path):
     assert dhash_of(p) is not None
     assert visual_metrics(p, [])["grays"] > 0
     assert fallback_date(p) is not None
+
+
+def test_schedule_plist_runs_purge_without_state_flag(tmp_path, monkeypatch):
+    from sekerinshotto import commands as cm
+    monkeypatch.setattr(cm, "_bin", lambda: "/usr/local/bin/sekerinshotto")
+    pl = cm._plist("purge", _State(tmp_path / "st"))
+    assert pl["ProgramArguments"] == ["/usr/local/bin/sekerinshotto", "purge", "--commit", "--json"]
+    assert pl["StartCalendarInterval"] == {"Hour": 3, "Minute": 15} and "--state" not in pl["ProgramArguments"]
+    assert pl["StandardOutPath"].endswith("logs/purge.log")

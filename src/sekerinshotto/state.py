@@ -15,7 +15,7 @@ from pathlib import Path
 from .contract import ToolError
 
 DB_SCHEMA_VERSION = 4
-SUBDIRS = ("inbox", "held", "quarantine", "batches", "journal", "audit")
+SUBDIRS = ("inbox", "held", "quarantine", "batches", "journal", "audit", "logs")
 
 # Sync engines copy index.sqlite, -wal and -shm separately and corrupt it.
 _SYNCED_MARKERS = ("/Library/Mobile Documents/", "/Library/CloudStorage/",

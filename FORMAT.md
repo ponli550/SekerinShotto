@@ -5,7 +5,7 @@ vault wrapper manages an Obsidian vault. Neither imports the other. They meet
 only at the files and the JSON described here. Any future ingester (PDF, web
 clip, …) that writes this format plugs into the same wrapper.
 
-Status: draft v0.26.0 — 2026-09-23.
+Status: draft v0.27.0 — 2026-09-23.
 
 ## 1. CLI contract (both tools)
 
@@ -257,6 +257,10 @@ Nothing waits on a human, and every non-standard outcome is logged. `cleanup` mo
   caller runs `confirm <id> --by llm|user --commit`. `confirm` and `keep` move only their target.
 - `purge --commit` deletes only images with `now >= purge_after`, and only files whose resolved path is
   inside `<state>/quarantine/` (symlinks and `..` refused). The note then says it is the only record.
+- `schedule install --commit` installs a LaunchAgent (`com.sekerinshotto.purge`) that runs `purge --commit`
+  daily at 03:15, logging to `<state>/logs/`; it passes no `--state`, so it follows `config use-state`.
+  `schedule show` / `schedule remove --commit` manage it. The drop zone routes each new image right after
+  its note exists (quarantine, attachments or held), unless `--keep-in-inbox`.
 - `restore <id|batch> --commit` moves quarantined images back to their original path, never over an
   existing file. Purged images cannot be restored.
 - An image routed by cleanup is never re-extracted from a new copy: its hash stays in the index.

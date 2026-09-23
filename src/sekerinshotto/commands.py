@@ -1386,7 +1386,8 @@ def cmd_add(a, state: State):
          args=[Arg("--interval", "seconds between inbox checks", type=int, default=2),
                Arg("--no-finder", "do not open the Finder window", flag=True),
                Arg("--ask", "ask first (the panel's A key): yes starts; dropping photos adds them and starts",
-                   flag=True)],
+                   flag=True),
+               Arg("--keep-in-inbox", "do not route images after extraction (leave them for cleanup)", flag=True)],
          writes=True,
          details="Plan: says what it will do. Commit: opens <state>/inbox in Finder (frontmost), then loops: "
                  "new files in the inbox are extracted; a line of paths typed or dropped onto this terminal is "
@@ -1452,8 +1453,17 @@ def cmd_dropzone(a, state: State):
             "SELECT substr(id,8,8) AS id8, category, note_path, id FROM items")]
         fresh = [n for n in new if n["id"] not in before]
         added_total += len(fresh)
+        routed = {}
+        if fresh and not a.keep_in_inbox:
+            with state.lock():
+                r = run_cleanup(state, state.connect(), content, True, only={n["id"] for n in fresh})
+            routed = {row[0]: row[1] for row in state.connect().execute(
+                f"SELECT id, source_state FROM items WHERE id IN ({','.join('?' * len(fresh))})",
+                [n["id"] for n in fresh])}
         for n in fresh:
-            say(f"  + {n['id8']}  {n['category']:<13} {n['note_path']}")
+            where = {"quarantined": "→ quarantine (7 days)", "attached": "→ kept (visual)", "held": "→ held",
+                     "present": ""}.get(routed.get(n["id"], "present"), "")
+            say(f"  + {n['id8']}  {n['category']:<13} {n['note_path']}  {where}")
         if not fresh and res.data.get("planned"):
             say(f"  {label}: re-extracted {res.data['planned']}")
 
@@ -1494,3 +1504,92 @@ def cmd_dropzone(a, state: State):
         pass
     say(f"\ndrop zone closed · {added_total} new note(s)")
     return Result({"committed": True, "added": added_total}, human="")
+
+
+# ---------------------------------------------------------------- schedule (LaunchAgents)
+import plistlib  # noqa: E402
+
+LAUNCH_DIR = Path.home() / "Library" / "LaunchAgents"
+JOBS = {
+    "purge": {"label": "com.sekerinshotto.purge", "summary": "purge due quarantined images daily at 03:15",
+              "args": ["purge", "--commit", "--json"], "when": {"StartCalendarInterval": {"Hour": 3, "Minute": 15}}},
+}
+
+
+def _bin() -> str:
+    found = shutil.which("sekerinshotto")
+    if not found:
+        raise ToolError("sekerinshotto is not on PATH; install it first: uv tool install --editable <repo>")
+    return str(Path(found).resolve())
+
+
+def _plist(job: str, state: State, extra: dict | None = None) -> dict:
+    spec = JOBS[job]
+    logs = state.dir("logs")
+    return {"Label": spec["label"], "ProgramArguments": [_bin(), *spec["args"]],
+            "StandardOutPath": str(logs / f"{job}.log"), "StandardErrorPath": str(logs / f"{job}.err"),
+            "RunAtLoad": False, **spec["when"], **(extra or {})}
+
+
+def _launchctl(*args) -> tuple[int, str]:
+    import subprocess
+    p = subprocess.run(["launchctl", *args], capture_output=True, text=True)
+    return p.returncode, (p.stdout + p.stderr).strip()
+
+
+def _loaded(label: str) -> bool:
+    return _launchctl("print", f"gui/{os.getuid()}/{label}")[0] == 0
+
+
+@command("schedule show", "Scheduled jobs (macOS LaunchAgents): installed? loaded? last log line")
+def cmd_schedule_show(a, state: State):
+    out = {}
+    for job, spec in JOBS.items():
+        f = LAUNCH_DIR / f"{spec['label']}.plist"
+        log = state.dir("logs") / f"{job}.log"
+        last = log.read_text().strip().splitlines()[-1][:200] if log.exists() and log.read_text().strip() else None
+        out[job] = {"label": spec["label"], "summary": spec["summary"], "installed": f.exists(),
+                    "loaded": _loaded(spec["label"]), "plist": str(f), "last_log": last}
+    return Result({"jobs": out, "state": str(state.root)})
+
+
+@command("schedule install", "Install the scheduled jobs as LaunchAgents (purge daily at 03:15)",
+         args=[Arg("--job", "only this job", default=None)],
+         writes=True,
+         details="Writes ~/Library/LaunchAgents/com.sekerinshotto.<job>.plist and loads it with launchctl. "
+                 "Jobs run without --state, so they follow `config use-state`. Output goes to <state>/logs/. "
+                 "purge only deletes quarantined images whose 7 days are up, inside <state>/quarantine/.")
+def cmd_schedule_install(a, state: State):
+    jobs = [a.job] if a.job else list(JOBS)
+    for j in jobs:
+        if j not in JOBS:
+            raise ToolError(f"unknown job {j!r}; valid: {', '.join(JOBS)}")
+    plan = [{"job": j, "plist": str(LAUNCH_DIR / f"{JOBS[j]['label']}.plist"), "runs": " ".join(_plist(j, state)["ProgramArguments"]),
+             "when": JOBS[j]["when"]} for j in jobs]
+    if not a.commit:
+        return Result({"committed": False, "would_install": plan})
+    LAUNCH_DIR.mkdir(parents=True, exist_ok=True)
+    state.dir("logs").mkdir(parents=True, exist_ok=True)
+    done = []
+    for j in jobs:
+        label, f = JOBS[j]["label"], LAUNCH_DIR / f"{JOBS[j]['label']}.plist"
+        if _loaded(label):
+            _launchctl("bootout", f"gui/{os.getuid()}/{label}")
+        f.write_bytes(plistlib.dumps(_plist(j, state)))
+        code, msg = _launchctl("bootstrap", f"gui/{os.getuid()}", str(f))
+        done.append({"job": j, "loaded": _loaded(label), "launchctl": msg or "ok"})
+    return Result({"committed": True, "installed": done}, violation=not all(d["loaded"] for d in done))
+
+
+@command("schedule remove", "Unload and delete the scheduled jobs", args=[Arg("--job", "only this job")],
+         writes=True)
+def cmd_schedule_remove(a, state: State):
+    jobs = [a.job] if a.job else list(JOBS)
+    present = [j for j in jobs if (LAUNCH_DIR / f"{JOBS[j]['label']}.plist").exists() or _loaded(JOBS[j]["label"])]
+    if not a.commit:
+        return Result({"committed": False, "would_remove": present})
+    for j in present:
+        label = JOBS[j]["label"]
+        _launchctl("bootout", f"gui/{os.getuid()}/{label}")
+        (LAUNCH_DIR / f"{label}.plist").unlink(missing_ok=True)
+    return Result({"committed": True, "removed": present})
