@@ -46,6 +46,17 @@ not be read reliably are held and retried. You never review images; `AUDIT.md` l
 State (index, manifests, signed journal) lives in `~/.local/share/sekerinshotto/`, outside any vault and
 never in a synced folder. Rerunning `ingest` skips images already extracted with the current extractor.
 
+## Asking many notes at once (optional)
+
+```bash
+uv tool install --editable '.[laya]'   # adds Laya, a small local model (Apple Silicon)
+sekerinshotto ask hackathon --question '{"type":"noul","instructions":"Is this an event I can register for?"}'
+```
+
+Laya answers one typed question per candidate note, locally, and returns ranked suggestions with
+confidence (about 4 in 5 right on topics in testing). It never changes a note; categories still need
+`tag --quote`.
+
 ## Panels
 
 ```bash

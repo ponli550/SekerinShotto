@@ -170,6 +170,15 @@ screenshot's text verbatim (redacted form is fine); an invented or paraphrased r
 exit 1. Your category is then final: rules never override it. Ids can be the full id, a prefix of at
 least 8 hex characters, or the note filename.
 
+## Asking many notes at once (optional, local)
+
+    sekerinshotto ask "hackathon" --question '{"type":"noul","instructions":"Is this an event I can register for?"}' --json
+
+Laya (a small local model, optional extra `sekerinshotto[laya]`) answers one typed question per
+candidate note; candidates come from the query and filters. It returns the top matches with confidence
+so you read a few notes instead of all of them. It is right about 4 times in 5 on topics; treat answers
+as leads, check with `show`, and act with `tag --quote`. `ask` never changes anything.
+
 ## Images
 
 `cleanup --commit` moves images: quarantine (deleted exactly 7 days later by `purge --commit`),
