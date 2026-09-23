@@ -973,3 +973,11 @@ def test_drilldown_opens_results_on_top_not_in_the_side_pane():
 def test_app_slug(pkg, slug):
     from sekerinshotto.notes import app_slug
     assert app_slug(pkg) == slug
+
+
+def test_syntax_colours_are_ones_panvim_resolves():
+    for line in pv.SYNTAX.splitlines():
+        if line.startswith("#") or not line.strip():
+            continue
+        colour = line.split("\t")[1].split(",")[0]
+        assert colour in pv.SYNTAX_COLOURS, line
