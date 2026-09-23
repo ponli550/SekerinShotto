@@ -5,7 +5,7 @@ vault wrapper manages an Obsidian vault. Neither imports the other. They meet
 only at the files and the JSON described here. Any future ingester (PDF, web
 clip, …) that writes this format plugs into the same wrapper.
 
-Status: draft v0.15.0 — 2026-09-23.
+Status: draft v0.16.0 — 2026-09-23.
 
 ## 1. CLI contract (both tools)
 
@@ -241,10 +241,15 @@ Nothing waits on a human, and every non-standard outcome is logged. `cleanup` mo
 | Read well | none of the below | `<state>/quarantine/<batch>/`, then purged | exactly 604800 s after `quarantined_at` |
 | Visual | text covers < 8 % of the content area, < 300 chars, ≥ 180 gray levels, edge share ≥ 0.03, no decoded QR, category not `system` | `<content>/attachments/`, embedded at the top of its note | none, kept forever |
 | Held | extraction failed, or an OCR URL is still `verified_by: none` without a cut-off flag | `<state>/held/` | none |
-| Kept | `keep <id> --commit` (a diagram the visual rule misses) | `<content>/attachments/` | none |
+| Diagram | ≥ 14 rows or ≥ 8 columns with a long straight edge, saturation ≤ 0.30, no decoded QR, category not `system`/`game` | `<content>/attachments/` | none, kept forever |
+| Kept | `keep <id> --commit` (anything the rules miss) | `<content>/attachments/` | none |
 
-- Visual rule measured on the sample: catches photos, video frames, camera feeds (14 of 182). It does NOT
-  catch text-heavy diagrams or slides; those are quarantined unless `keep` is used.
+- Visual rule measured on the sample: catches photos, video frames, camera feeds (14 of 182).
+- Diagram rule, for tables, timetables, formulas and slides whose layout OCR flattens: measured on the
+  sample, 17 selected and 16 of them real diagrams on visual check (the miss: a delivery app's price
+  list). Not caught: colourful infographics and posters (saturation > 0.30); posters' text is captured
+  anyway. Straight edges are counted on a 300×600 edge map: a row counts at ≥ 90 px (30 % of width), a
+  column at ≥ 90 px (15 % of height). Chats are not excluded: forwarded tables arrive as chat media.
 - Held images keep their note (`source_state: held`, tag `sekerinshotto/held`), are re-extracted by `retry`
   (counted in `attempts`), are never deleted automatically, and leave `held/` when they pass or when the
   caller runs `confirm <id> --by llm|user --commit`. `confirm` and `keep` move only their target.

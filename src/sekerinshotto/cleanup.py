@@ -16,6 +16,9 @@ QUARANTINE_SECONDS = 7 * 24 * 60 * 60          # exactly 604800 s after quaranti
 VISUAL_MAX_COVERAGE, VISUAL_MAX_CHARS = 0.08, 300
 VISUAL_MIN_GRAYS, VISUAL_MIN_EDGES = 180, 0.03
 NOT_VISUAL_CATEGORIES = {"system"}             # home screens: icons, not knowledge
+DIAGRAM_MIN_HLINES, DIAGRAM_MIN_VLINES = 14, 8
+DIAGRAM_MAX_SATURATION = 0.30                  # colourful posters are above; tables and documents below
+NOT_DIAGRAM_CATEGORIES = {"system", "game"}    # home screens and game HUDs are full of straight lines
 
 
 def is_visual(rec: dict) -> bool:
@@ -24,6 +27,15 @@ def is_visual(rec: dict) -> bool:
     return (rec.get("text_coverage", 1.0) < VISUAL_MAX_COVERAGE and (rec.get("text_chars") or 0) < VISUAL_MAX_CHARS
             and (rec.get("grays") or 0) >= VISUAL_MIN_GRAYS and (rec.get("edges") or 0) >= VISUAL_MIN_EDGES
             and not rec["entities"]["qr"] and rec.get("category") not in NOT_VISUAL_CATEGORIES)
+
+
+def is_diagram(rec: dict) -> bool:
+    """Tables, timetables, formulas, slides: layout carries meaning OCR flattens. Measured on the sample:
+    16 of 17 selected were real diagrams (the miss: a delivery app price list); a colourful infographic
+    and posters are not caught (posters' text is captured anyway)."""
+    return ((rec.get("hlines") or 0) >= DIAGRAM_MIN_HLINES or (rec.get("vlines") or 0) >= DIAGRAM_MIN_VLINES) \
+        and not rec["entities"]["qr"] and (rec.get("saturation") or 0.0) <= DIAGRAM_MAX_SATURATION \
+        and rec.get("category") not in NOT_DIAGRAM_CATEGORIES
 
 
 def decide(rec: dict) -> tuple[str, str]:
@@ -37,6 +49,8 @@ def decide(rec: dict) -> tuple[str, str]:
         return "hold", "unverified URL: " + ", ".join(unverified[:3])
     if is_visual(rec):
         return "attach", f"visual: text covers {rec.get('text_coverage', 0):.0%} of the screen"
+    if is_diagram(rec):
+        return "attach", f"diagram: {rec.get('hlines')} horizontal / {rec.get('vlines')} vertical lines"
     return "quarantine", "content captured in the note"
 
 

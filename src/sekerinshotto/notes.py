@@ -148,7 +148,7 @@ def generated_body(ex: Extraction, org: dict | None = None) -> str:
     src.append("- image: " + {
         "present": "at its source, not yet cleaned up",
         "quarantined": f"quarantined, purged after {ex.purge_after} UTC",
-        "attached": "kept in the vault (visual)",
+        "attached": "kept in the vault (visual or diagram)",
         "held": f"held — {ex.hold_reason}; retried automatically, never auto-deleted",
         "purged": f"purged at {ex.purged_at}; this note is the only record",
     }.get(ex.source_state, ex.source_state))
@@ -222,6 +222,7 @@ def manifest_record(ex: Extraction, batch_id: str, note_path: str, source_state:
         "sig": ex.sig, "toks": ex.toks, "dhash": ex.dhash, "content_tokens": ex.content_tokens,
         "extractor_version": ex.extractor_version,
         "text_coverage": ex.text_coverage, "grays": ex.grays, "edges": ex.edges,
+        "hlines": ex.hlines, "vlines": ex.vlines, "saturation": ex.saturation,
         **{k: getattr(ex, k) for k in LIFECYCLE},
     }
 
@@ -248,6 +249,7 @@ def extraction_from_record(rec: dict, text: str) -> Extraction:
     ex.sig, ex.dhash, ex.content_tokens = rec.get("sig") or [], rec.get("dhash"), rec.get("content_tokens") or 0
     ex.toks = rec.get("toks") or []
     ex.text_coverage, ex.grays, ex.edges = rec.get("text_coverage") or 0.0, rec.get("grays") or 0, rec.get("edges") or 0.0
+    ex.hlines, ex.vlines, ex.saturation = rec.get("hlines") or 0, rec.get("vlines") or 0, rec.get("saturation") or 0.0
     ex.source_state = rec.get("source_state") or "present"
     for k in LIFECYCLE:
         if rec.get(k) is not None:
