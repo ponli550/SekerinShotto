@@ -93,7 +93,11 @@ def _home(con, content, state_root, now) -> list[str]:
     todo = [(held, "held", "images held back · a = audit"),
             (uncat, "uncategorized", "notes no rule matched · the LLM can tag them"),
             (present, "present", "images not cleaned up yet · C = cleanup")]
-    right += [f"  {k:<14} {n:>3}  {why}" for n, k, why in todo if n] or ["  nothing to do"]
+    inbox = sum(1 for p in (state_root / "inbox").glob("*") if p.is_file() and not p.name.startswith("."))
+    waiting = max(0, inbox - con.execute("SELECT COUNT(*) FROM items WHERE source_path LIKE ?",
+                                         (str(state_root / "inbox") + "/%",)).fetchone()[0])
+    todo.insert(0, (waiting, "inbox", "photos waiting · I = extract, A = add more"))
+    right += [f"  {k:<14} {n:>3}  {why}" for n, k, why in todo if n] or ["  nothing to do · A = add photos"]
     right += ["", "recent notes · n = all notes"]
     # ambient panel: app and key terms only, never OCR text (headlines live on the on-demand results board)
     for iid, cat, cap, app, rec in _q(con, """SELECT substr(id,8,8), category, captured_at, source_app, record
@@ -235,11 +239,11 @@ def render(view: str, con, content: Path | None, state_root: Path, category: str
 
 
 # ---------------------------------------------------------------- installer
-CONFIRM = ("sh -c 'sekerinshotto {cmd}; printf \"\\ntype {word} to commit, anything else cancels: \"; "
-           "read a; [ \"$a\" = {word} ] && sekerinshotto {cmd} --commit || echo cancelled'")
+# panvim runs a key's argument with `bash -c`, so no extra quoting layer: dropped paths (which the terminal
+# pastes shell-escaped) reach sekerinshotto intact, even with spaces or quotes in them.
+CONFIRM = ("sekerinshotto {cmd}; printf '\\ntype {word} to commit, anything else cancels: '; "
+           "read a; [ \"$a\" = {word} ] && sekerinshotto {cmd} --commit || echo cancelled")
 
-# Titles must match [A-Za-z0-9_-]+: `panvim new` writes them unquoted, and `panvim audit` only recognises
-# that form when it matches state dirs to panels.
 SPECS = {
     "ss": ("SekerinShotto", "home", 10, False, "95%x90%"),
     "ss-class": ("ss-categories", "class", 30, True, "95%x90%"),
@@ -268,6 +272,10 @@ def keys_for(name: str) -> str:
          "# no key passes --commit on its own.", "[global]"] + _nav()
     g += ["s\tsearch → results board\tinput:search: |term-side|sekerinshotto panel set '{input}' && ss-results-popup",
           "w\twhere things stand (status)\tterm-hold\tsekerinshotto status",
+          "A\tADD photos: drag files or folders onto the prompt (plan, then confirm)\t"
+          "input:drop photos here, then Enter: |term-hold|" + CONFIRM.format(cmd="add {input}", word="yes"),
+          "f\topen the inbox folder in Finder (drop photos there, then I)\tterm\topen \"$(sekerinshotto panel inbox)\"",
+          "I\tINGEST the inbox (plan, then confirm)\tterm-hold\t" + CONFIRM.format(cmd="ingest", word="yes"),
           "C\tCLEANUP: route images (plan, then confirm)\tterm-hold\t" + CONFIRM.format(cmd="cleanup", word="yes"),
           "O\tORGANIZE: re-apply rules (plan, then confirm)\tterm-hold\t" + CONFIRM.format(cmd="organize", word="yes"),
           "q\tquit\tquit"]

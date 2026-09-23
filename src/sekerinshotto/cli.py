@@ -16,7 +16,8 @@ def _add(p: argparse.ArgumentParser, arg) -> None:
     elif arg.name.startswith("--"):
         p.add_argument(arg.name, type=arg.type, default=arg.default, help=arg.help)
     else:
-        p.add_argument(arg.name, type=arg.type, nargs=None if arg.required else "?", help=arg.help)
+        nargs = "+" if arg.many else (None if arg.required else "?")
+        p.add_argument(arg.name, type=arg.type, nargs=nargs, help=arg.help)
 
 
 class _Parser(argparse.ArgumentParser):

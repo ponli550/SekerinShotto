@@ -71,7 +71,7 @@ def cmd_schema(a, state):
 
 # ---------------------------------------------------------------- ingest
 @command("ingest", "Extract images into notes: OCR text, QR payloads, URLs",
-         args=[Arg("src", "an image file or a folder (searched recursively)"),
+         args=[Arg("src", "an image file or a folder (searched recursively); default: <state>/inbox", required=False),
                Arg("--content", "content root the notes are written under (bound to the state on first use)"),
                Arg("--limit", "process at most N images", type=int),
                Arg("--workers", "parallel extraction threads", type=int, default=4),
@@ -82,7 +82,9 @@ def cmd_schema(a, state):
                  "extracted with the current extractor version are skipped. Exit 2 when some "
                  "notes were not overwritten because a human removed their generated markers.")
 def cmd_ingest(a, state: State):
-    src = Path(a.src).expanduser().resolve()
+    src = Path(a.src).expanduser().resolve() if a.src else state.dir("inbox")
+    if not a.src:
+        state.ensure()
     if not src.exists():
         raise ToolError(f"source {src} does not exist")
     content = _content_root(state, a.content, required=True)
@@ -1099,7 +1101,7 @@ from . import panels as pv  # noqa: E402
 
 
 @command("panel", "Render one read-only panvim panel (counts, reasons, names; never OCR text)",
-         args=[Arg("view", "home | class | concepts | groups | audit | quarantine | notes | results | set | set-row | path | image"),
+         args=[Arg("view", "home | class | concepts | groups | audit | quarantine | notes | results | set | set-row | inbox | path | image"),
                Arg("id", "for path/image: an item id / prefix / note filename, or a group id", required=False),
                Arg("--category", "notes view: only this category")],
          details="What panvim runs on its timer. Reads the index only, never extraction or Laya. "
@@ -1110,6 +1112,9 @@ def cmd_panel(a, state: State):
         return Result({"_text": "SekerinShotto — not initialised\n\nRun: sekerinshotto ingest <folder> --content <vault folder> --commit\n"})
     con = state.connect()
     content = _content_root(state, None, required=False)
+    if a.view == "inbox":
+        state.ensure()
+        return Result({"_text": str(state.dir("inbox")) + "\n"})
     if a.view == "set-row":
         if not a.id:
             raise ToolError("panel set-row needs a row value")
@@ -1285,3 +1290,65 @@ def cmd_config_use_state(a, state: State):
     cfg["state"] = str(target)
     f.write_text(json.dumps(cfg, indent=1) + "\n")
     return Result({"committed": True, **info, "config_file": str(f)})
+
+
+
+# ---------------------------------------------------------------- add (drag-and-drop into panvim)
+from .extract import IMAGE_EXTS  # noqa: E402
+
+
+def _expand(paths: list[str]) -> tuple[list[Path], list[str]]:
+    """Dropped paths (a terminal pastes them shell-escaped; argv already unescaped them) -> image files."""
+    files, skipped = [], []
+    for raw in paths:
+        p = Path(raw.strip().strip("'\"")).expanduser()
+        if p.is_dir():
+            files += [f for f in sorted(p.rglob("*")) if f.is_file() and f.suffix.lower() in IMAGE_EXTS
+                      and not f.name.startswith(".")]
+        elif p.is_file() and p.suffix.lower() in IMAGE_EXTS:
+            files.append(p)
+        else:
+            skipped.append(raw)
+    return files, skipped
+
+
+@command("add", "Add photos: copy (or move) images or folders into the inbox, then extract them",
+         args=[Arg("paths", "image files or folders; several are fine (drag them onto the prompt)", many=True),
+               Arg("--move", "move instead of copy (the originals leave where they were)", flag=True),
+               Arg("--content", "content root, if the state folder has no binding yet")],
+         writes=True,
+         details="Made for the panel's `A` key: dropping files on a terminal pastes their paths, which this "
+                 "takes. Plan: lists what would be added. Commit: copies (or --move) them into <state>/inbox, "
+                 "keeping the filename (Android names carry the app and capture time), then runs ingest on "
+                 "the inbox. Images already known by hash are skipped by ingest as usual.")
+def cmd_add(a, state: State):
+    paths = list(a.paths)
+    files, skipped = _expand(paths)
+    if not files:
+        raise ToolError(f"no images found in {', '.join(paths)[:200]} (supported: {', '.join(sorted(IMAGE_EXTS))})")
+    content = _content_root(state, a.content, required=True)     # before touching any file
+    inbox = state.dir("inbox")
+    plan = {"files": len(files), "mode": "move" if a.move else "copy", "inbox": str(inbox), "content_root": str(content),
+            "skipped_not_images": skipped, "items": [f.name for f in files[:50]]}
+    if not a.commit:
+        return Result({"committed": False, **plan},
+                      human=f"would {plan['mode']} {len(files)} image(s) into the inbox and extract them"
+                            + (f"; skipping {len(skipped)} non-image path(s)" if skipped else "") + "\n"
+                            + "".join(f"  {n}\n" for n in plan["items"]))
+    state.ensure()
+    placed = 0
+    for f in files:
+        dst = inbox / f.name
+        if dst.exists():
+            if sha256_file(dst) == sha256_file(f):
+                continue                                  # already in the inbox
+            dst = inbox / f"{f.stem}-{sha256_file(f).split(':')[1][:6]}{f.suffix}"
+        (shutil.move if a.move else shutil.copy2)(str(f), str(dst))
+        placed += 1
+    a.src, a.limit, a.cleanup = str(inbox), None, False
+    a.workers = getattr(a, "workers", None) or 4
+    res = cmd_ingest(a, state)
+    d = res.data
+    return Result({"committed": True, "placed": placed, **plan, "ingest": d}, violation=res.violation,
+                  human=f"added {placed} image(s); extracted {d.get('written', 0)} note(s)"
+                        f"{' · ' + str(len(d.get('failed') or [])) + ' failed' if d.get('failed') else ''}\n")
