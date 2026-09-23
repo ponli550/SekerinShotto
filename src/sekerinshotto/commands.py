@@ -915,6 +915,8 @@ def cmd_show(a, state: State):
         import tempfile
         tmp = Path(tempfile.gettempdir()) / f"sekerinshotto-card-{iid.split(':')[1][:8]}.txt"
         tmp.write_text(human)
+        from . import contract as _c3
+        os.dup2(_c3.OUT.fileno(), 1)                          # hand nvim the real terminal on fd 1
         os.execvp("nvim", ["nvim", "-R", "-n", "-c",
                            "set nonumber norelativenumber signcolumn=no foldcolumn=0 statuscolumn= wrap linebreak nomodifiable | "
                            "nnoremap <buffer> q :qa!<CR>", str(tmp)])
@@ -1408,11 +1410,12 @@ def cmd_dropzone(a, state: State):
         # The panel's A key. The first answer is the consent: `yes`, or photos dropped onto this pane
         # (a terminal pastes their paths) -- dropping a photo here is the natural first move, and it
         # used to land in a yes/no prompt as a "no".
-        sys.stdout.write(f"Finder is open on the inbox: {inbox}\n\n"
+        from . import contract as _c
+        _c.OUT.write(f"Finder is open on the inbox: {inbox}\n\n"
                          "Drop photos onto this pane (then Enter) to add them and start the drop zone,\n"
                          "or type yes + Enter to start it empty. Anything else cancels. If typing does\n"
                          "nothing, press i in this pane first.\n\n> ")
-        sys.stdout.flush()
+        _c.OUT.flush()
         answer = sys.stdin.readline().strip()
         if answer.lower() != "yes":
             try:
@@ -1420,7 +1423,8 @@ def cmd_dropzone(a, state: State):
             except ValueError:
                 first_drop, skipped = [], [answer]
             if not first_drop:
-                sys.stdout.write("cancelled" + (f" (no images in: {answer[:80]})" if answer else "") + "\n")
+                _c.OUT.write("cancelled" + (f" (no images in: {answer[:80]})" if answer else "") + "\n")
+                _c.OUT.flush()
                 return Result({"committed": False, "cancelled": True}, human="")
         a.commit = True
     if not a.commit:
@@ -1429,7 +1433,8 @@ def cmd_dropzone(a, state: State):
                             "Type yes + Enter to start auto-extracting whatever lands there or is dragged onto\n"
                             "this pane (q stops it). Photos dropped before that wait in the inbox; I extracts them.\n"
                             "If typing does nothing, press i in this pane first.\n")
-    say = lambda m: (sys.stdout.write(m + "\n"), sys.stdout.flush())
+    from . import contract as _c2
+    say = lambda m: (_c2.OUT.write(m + "\n"), _c2.OUT.flush())
     say(f"DROP ZONE · {inbox}")
     say("  drop photos into the Finder window, or drag them onto this pane (then Enter)")
     say("  Finder MOVES files between folders on the same disk: hold Option while dropping to copy")

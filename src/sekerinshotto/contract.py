@@ -96,23 +96,35 @@ def envelope(command_path: str, *, data: dict | None = None, error: str | None =
     return env
 
 
+# Where the envelope, panel text and interactive prompts go. cli.main() points this at the REAL stdout and
+# redirects file descriptor 1 to stderr, because native libraries (Apple Vision's Espresso/E5RT) print
+# warnings straight to fd 1 -- "On-device compilation within a VM only supports CPU" -- which corrupted
+# the one-JSON-object contract. Python-level redirection cannot catch writes from C.
+OUT = sys.stdout
+
+
 def emit(env: dict, as_json: bool, human: str | None = None) -> None:
     if as_json:
-        sys.stdout.write(json.dumps(env, ensure_ascii=False, sort_keys=False) + "\n")
+        OUT.write(json.dumps(env, ensure_ascii=False, sort_keys=False) + "\n")
+        OUT.flush()
         return
     if not env["ok"]:
         sys.stderr.write(f"error: {env['error']}\n")
         return
     if human is not None:
-        sys.stdout.write(human)
+        OUT.write(human)
+        OUT.flush()
         return
     if isinstance(env["data"], dict) and "_text" in env["data"]:
-        sys.stdout.write(env["data"]["_text"])            # panels: plain text for panvim
+        OUT.write(env["data"]["_text"])                   # panels: plain text for panvim
+        OUT.flush()
         return
     _human(env["data"])
 
 
 def _human(data: Any, indent: int = 0) -> None:
+    import builtins
+    print = lambda *x: builtins.print(*x, file=OUT)  # noqa: E731
     pad = "  " * indent
     if isinstance(data, dict):
         for k, v in data.items():
