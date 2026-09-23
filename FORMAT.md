@@ -5,7 +5,7 @@ vault wrapper manages an Obsidian vault. Neither imports the other. They meet
 only at the files and the JSON described here. Any future ingester (PDF, web
 clip, …) that writes this format plugs into the same wrapper.
 
-Status: draft v0.22.0 — 2026-09-23.
+Status: draft v0.23.0 — 2026-09-23.
 
 ## 1. CLI contract (both tools)
 
@@ -419,6 +419,13 @@ Side-pane keys that only print (`show`) are piped into `less -R`: panvim's `term
 closes its pane when the command exits, which made them flash and vanish. Titles are `[A-Za-z0-9_-]+`
 (`panvim new` writes them unquoted and `panvim audit` only matches that form); `panels install` repairs
 older wrappers and syncs the registry title column of `ss*` rows only.
+
+Filenames and dates: besides Android `Screenshot_YYYYMMDD_HHMMSS_<package>…`, SekerinShotto reads
+`WhatsApp Image YYYY-MM-DD at HH.MM.SS`, macOS `Screenshot YYYY-MM-DD at H.MM.SS AM/PM`, and camera
+`IMG_/PXL_/VID_/MVIMG_YYYYMMDD_HHMMSS`; otherwise EXIF DateTimeOriginal, else the file's modification time.
+A note named `undated-…` is renamed once when it gains a date (journal `move`); otherwise paths never change.
+`added_at` is set on first insert and never updated (backfilled from the earliest batch for older rows);
+the home panel lists recently added notes by it. `add` prints each created note's path.
 
 Adding photos from a panel: a terminal cannot receive a dropped file, it pastes the file's path as text.
 `A` opens a prompt, so dragging files or folders onto it pastes their (shell-escaped) paths; Enter shows

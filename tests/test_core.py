@@ -29,6 +29,17 @@ def test_non_android_filename_has_no_metadata():
     assert parse_filename("IMG_0412.png") == {}
 
 
+@pytest.mark.parametrize("name,app,when", [
+    ("WhatsApp Image 2026-08-10 at 16.26.05.jpeg", "com.whatsapp", "2026-08-10T16:26:05"),
+    ("Screenshot 2026-01-02 at 3.45.12 PM.png", "com.apple.macos", "2026-01-02T15:45:12"),
+    ("IMG_20251203_101500.jpg", None, "2025-12-03T10:15:00"),
+    ("PXL_20251203_101500123.jpg", None, "2025-12-03T10:15:00"),
+])
+def test_other_filename_dates(name, app, when):
+    got = parse_filename(name)
+    assert got["captured_at"] == when and got.get("source_app") == app
+
+
 # ---------------------------------------------------------------- QR classification
 def _emv(fields: list[tuple[str, str]]) -> str:
     body = "".join(f"{t}{len(v):02d}{v}" for t, v in fields) + "6304"
@@ -917,3 +928,18 @@ def test_add_checks_the_vault_before_copying(tmp_path):
     code, res = _run("add", str(tmp_path / "x.png"), "--commit", env=env)
     assert code == 1 and "no content root" in res["error"]
     assert not (tmp_path / "st" / "inbox").exists() or not any((tmp_path / "st" / "inbox").iterdir())
+
+
+def test_upsert_updates_every_descriptive_column(tmp_path):
+    from sekerinshotto.commands import _index
+    st = _State(tmp_path / "st")
+    con = st.connect()
+    rec = {"id": "sha256:" + "cd" * 32, "source_path": "/x/a.jpg", "source_app": None, "captured_at": None,
+           "width": 1, "height": 1, "bytes": 1, "source_state": "present", "status": "ok", "status_reason": None,
+           "ocr_confidence": 1.0, "text_chars": 0, "note_path": "n.md", "batch_id": "b",
+           "entities": {"qr": [], "urls": [], "domains": []}}
+    _index(con, rec, "", "2026-01-01T00:00:00Z")
+    _index(con, {**rec, "source_app": "com.whatsapp", "captured_at": "2026-08-10T16:26:05", "width": 9}, "",
+           "2026-01-02T00:00:00Z")
+    row = con.execute("SELECT source_app, captured_at, width, added_at FROM items").fetchone()
+    assert tuple(row) == ("com.whatsapp", "2026-08-10T16:26:05", 9, "2026-01-01T00:00:00Z")   # added_at set once

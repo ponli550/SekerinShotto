@@ -14,7 +14,7 @@ from pathlib import Path
 
 from .contract import ToolError
 
-DB_SCHEMA_VERSION = 3
+DB_SCHEMA_VERSION = 4
 SUBDIRS = ("inbox", "held", "quarantine", "batches", "journal", "audit")
 
 # Sync engines copy index.sqlite, -wal and -shm separately and corrupt it.
@@ -117,7 +117,24 @@ class State:
         con.execute("PRAGMA journal_mode=WAL")
         con.execute("PRAGMA foreign_keys=ON")
         _migrate(con)
+        if con.execute("SELECT 1 FROM items WHERE added_at IS NULL LIMIT 1").fetchone():
+            self._backfill_added(con)
         return con
+
+    def _backfill_added(self, con) -> None:
+        """added_at for rows from before it existed: the earliest batch whose manifest names the item
+        (batch ids are UTC timestamps), else the recorded ingest time."""
+        first: dict[str, str] = {}
+        for mf in sorted(self.dir("batches").glob("*.jsonl")):
+            stamp = mf.stem[:20]                                    # 2026-09-23T07-18-40Z
+            ts = stamp[:11] + stamp[11:].replace("-", ":")
+            for line in mf.read_text().splitlines():
+                iid = json.loads(line).get("id")
+                if iid and iid not in first:
+                    first[iid] = ts
+        for (iid,) in con.execute("SELECT id FROM items WHERE added_at IS NULL").fetchall():
+            con.execute("UPDATE items SET added_at = COALESCE(?, ingested_at) WHERE id = ?", (first.get(iid), iid))
+        con.commit()
 
     # ---- signed journal (hash chain + HMAC, adapted from VeriPay) ----
     def _key(self) -> bytes:
@@ -205,7 +222,7 @@ def _migrate(con: sqlite3.Connection) -> None:
     for col, typ in (("record", "TEXT"), ("category", "TEXT"), ("decided_by", "TEXT"), ("why", "TEXT"),
                      ("group_id", "TEXT"), ("rank", "INTEGER"), ("group_size", "INTEGER"),
                      ("stored_path", "TEXT"), ("purge_after", "TEXT"), ("hold_reason", "TEXT"),
-                     ("attempts", "INTEGER"), ("keep", "INTEGER"), ("confirmed_by", "TEXT")):
+                     ("attempts", "INTEGER"), ("keep", "INTEGER"), ("confirmed_by", "TEXT"), ("added_at", "TEXT")):
         if col not in have:                                    # additive migration, v1 -> v2
             con.execute(f"ALTER TABLE items ADD COLUMN {col} {typ}")
     con.execute("CREATE INDEX IF NOT EXISTS items_group ON items(group_id)")
