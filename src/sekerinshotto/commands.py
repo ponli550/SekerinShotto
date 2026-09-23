@@ -94,7 +94,7 @@ def cmd_ingest(a, state: State):
     t0 = time.perf_counter()
     todo, skipped, dup_in_batch, seen = [], 0, 0, set()
     copies: dict[str, list[Path]] = {}
-    for p in iter_images(src, a.limit):
+    for p in (getattr(a, "files", None) or iter_images(src, a.limit)):
         fid = sha256_file(p)
         if fid in seen:
             dup_in_batch += 1
@@ -1511,6 +1511,8 @@ import plistlib  # noqa: E402
 
 LAUNCH_DIR = Path.home() / "Library" / "LaunchAgents"
 JOBS = {
+    "watch": {"label": "com.sekerinshotto.watch", "summary": "autoadd photos from a folder when it changes (opt-in)",
+              "args": ["autoadd"], "when": {}, "opt_in": True},
     "purge": {"label": "com.sekerinshotto.purge", "summary": "purge due quarantined images daily at 03:15",
               "args": ["purge", "--commit", "--json"], "when": {"StartCalendarInterval": {"Hour": 3, "Minute": 15}}},
 }
@@ -1523,10 +1525,14 @@ def _bin() -> str:
     return str(Path(found).resolve())
 
 
-def _plist(job: str, state: State, extra: dict | None = None) -> dict:
+def _plist(job: str, state: State, extra: dict | None = None, folder: str | None = None) -> dict:
     spec = JOBS[job]
     logs = state.dir("logs")
-    return {"Label": spec["label"], "ProgramArguments": [_bin(), *spec["args"]],
+    args = [*spec["args"]]
+    if job == "watch":
+        args += [folder, "--commit", "--json"]
+        extra = {**(extra or {}), "WatchPaths": [folder], "ThrottleInterval": 30}
+    return {"Label": spec["label"], "ProgramArguments": [_bin(), *args],
             "StandardOutPath": str(logs / f"{job}.log"), "StandardErrorPath": str(logs / f"{job}.err"),
             "RunAtLoad": False, **spec["when"], **(extra or {})}
 
@@ -1554,18 +1560,23 @@ def cmd_schedule_show(a, state: State):
 
 
 @command("schedule install", "Install the scheduled jobs as LaunchAgents (purge daily at 03:15)",
-         args=[Arg("--job", "only this job", default=None)],
+         args=[Arg("--job", "only this job", default=None),
+               Arg("--folder", "watch job: the folder to autoadd from (e.g. ~/Downloads)")],
          writes=True,
          details="Writes ~/Library/LaunchAgents/com.sekerinshotto.<job>.plist and loads it with launchctl. "
                  "Jobs run without --state, so they follow `config use-state`. Output goes to <state>/logs/. "
                  "purge only deletes quarantined images whose 7 days are up, inside <state>/quarantine/.")
 def cmd_schedule_install(a, state: State):
-    jobs = [a.job] if a.job else list(JOBS)
+    jobs = [a.job] if a.job else [j for j, sp in JOBS.items() if not sp.get("opt_in")]
     for j in jobs:
         if j not in JOBS:
             raise ToolError(f"unknown job {j!r}; valid: {', '.join(JOBS)}")
-    plan = [{"job": j, "plist": str(LAUNCH_DIR / f"{JOBS[j]['label']}.plist"), "runs": " ".join(_plist(j, state)["ProgramArguments"]),
-             "when": JOBS[j]["when"]} for j in jobs]
+    folder = str(Path(a.folder).expanduser().resolve()) if a.folder else None
+    if "watch" in jobs and not folder:
+        raise ToolError("the watch job needs --folder (the folder photos arrive in, e.g. ~/Downloads)")
+    plan = [{"job": j, "plist": str(LAUNCH_DIR / f"{JOBS[j]['label']}.plist"),
+             "runs": " ".join(_plist(j, state, folder=folder)["ProgramArguments"]),
+             "when": JOBS[j]["when"] or {"WatchPaths": [folder]}} for j in jobs]
     if not a.commit:
         return Result({"committed": False, "would_install": plan})
     LAUNCH_DIR.mkdir(parents=True, exist_ok=True)
@@ -1575,7 +1586,7 @@ def cmd_schedule_install(a, state: State):
         label, f = JOBS[j]["label"], LAUNCH_DIR / f"{JOBS[j]['label']}.plist"
         if _loaded(label):
             _launchctl("bootout", f"gui/{os.getuid()}/{label}")
-        f.write_bytes(plistlib.dumps(_plist(j, state)))
+        f.write_bytes(plistlib.dumps(_plist(j, state, folder=folder)))
         code, msg = _launchctl("bootstrap", f"gui/{os.getuid()}", str(f))
         done.append({"job": j, "loaded": _loaded(label), "launchctl": msg or "ok"})
     return Result({"committed": True, "installed": done}, violation=not all(d["loaded"] for d in done))
@@ -1593,3 +1604,52 @@ def cmd_schedule_remove(a, state: State):
         _launchctl("bootout", f"gui/{os.getuid()}/{label}")
         (LAUNCH_DIR / f"{label}.plist").unlink(missing_ok=True)
     return Result({"committed": True, "removed": present})
+
+
+
+# ---------------------------------------------------------------- autoadd (phone -> Mac)
+def _photo_named(p: Path) -> bool:
+    """Only files named the way phones and Macs name photos/screenshots: a random downloaded image
+    (a logo, an avatar) is never swept up."""
+    from .extract import parse_filename
+    return bool(parse_filename(p.name))
+
+
+@command("autoadd", "Extract photos/screenshots that arrived in a folder, and route the originals",
+         args=[Arg("folder", "where photos arrive (e.g. ~/Downloads, where Taildrop saves)"),
+               Arg("--settle", "ignore files modified in the last N seconds (still being written)", type=int,
+                   default=5)],
+         writes=True,
+         details="Plan: lists the files it would take. Commit: extracts them in place, then routes each original "
+                 "like cleanup (quarantine 7 days, attachments, or held) -- the originals leave the folder. Only "
+                 "files named like photos/screenshots are touched (Android Screenshot_, WhatsApp Image, macOS "
+                 "Screenshot … at …, IMG_/PXL_/VID_/MVIMG_). Images already known by hash are skipped. The watch "
+                 "LaunchAgent runs this when the folder changes.")
+def cmd_autoadd(a, state: State):
+    import time
+    folder = Path(a.folder).expanduser().resolve()
+    if not folder.is_dir():
+        raise ToolError(f"{folder} is not a folder")
+    content = _content_root(state, None, required=True)
+    now = time.time()
+    cands = [p for p in sorted(folder.iterdir()) if p.is_file() and p.suffix.lower() in IMAGE_EXTS
+             and not p.name.startswith(".") and _photo_named(p) and now - p.stat().st_mtime >= a.settle]
+    con = state.connect()
+    known = {r[0] for r in con.execute("SELECT id FROM items")}
+    new = [p for p in cands if sha256_file(p) not in known]
+    plan = {"folder": str(folder), "photo_named": len(cands), "new": len(new), "already_known": len(cands) - len(new),
+            "items": [p.name for p in new[:50]]}
+    if not a.commit:
+        return Result({"committed": False, **plan},
+                      human=f"{folder}: {len(new)} new photo(s) would be extracted and their originals routed "
+                            f"(quarantine 7 days / kept / held); {len(cands) - len(new)} already known\n")
+    if not new:
+        return Result({"committed": True, **plan, "written": 0})
+    ns = argparse.Namespace(src=str(folder), files=new, content=None, limit=None, workers=4, cleanup=False,
+                            commit=True, json=False, state=None)
+    res = cmd_ingest(ns, state)
+    ids = {sha256_file(p) for p in new if p.exists()}
+    with state.lock():
+        routed = run_cleanup(state, state.connect(), content, True, only=ids)
+    return Result({"committed": True, **plan, "written": res.data.get("written"), "routed": routed["moved"]},
+                  violation=res.violation)
