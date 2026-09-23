@@ -19,6 +19,24 @@ FAIL_MIN_CHARS = 3            # fewer chars and no barcode -> failed/no_text
 FAIL_MIN_CONFIDENCE = 0.5     # char-weighted mean line confidence below this -> failed/low_confidence
 
 
+_HEIF_READY = False
+
+
+def _pil():
+    """Pillow with HEIC/HEIF support (iPhone photos). Without it, Vision still reads the text but the image
+    fingerprint, visual/diagram metrics and EXIF dates silently came back empty."""
+    global _HEIF_READY
+    from PIL import Image
+    if not _HEIF_READY:
+        try:
+            from pillow_heif import register_heif_opener
+            register_heif_opener()
+        except ImportError:
+            pass
+        _HEIF_READY = True
+    return Image
+
+
 def sha256_file(path: Path) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as fh:
@@ -279,7 +297,8 @@ def _long_runs(mask: bytes, width: int, height: int, min_run: int, vertical: boo
 def visual_metrics(path: Path, lines) -> dict:
     """Image measurements used by cleanup (FORMAT §6):
     text coverage / gray levels / edges -> photos; long straight lines + low saturation -> diagrams."""
-    from PIL import Image, ImageFilter
+    from PIL import ImageFilter
+    Image = _pil()
     content = [l for l in lines if len(l) > 2 and CHROME_TOP <= l[2][1] <= CHROME_BOTTOM]
     out = {"text_coverage": round(sum(l[2][2] * l[2][3] for l in content) / (CHROME_BOTTOM - CHROME_TOP), 4),
            "grays": 0, "edges": 0.0, "hlines": 0, "vlines": 0, "saturation": 0.0}
@@ -301,7 +320,7 @@ def visual_metrics(path: Path, lines) -> dict:
 
 
 def dhash_of(path: Path) -> str | None:
-    from PIL import Image
+    Image = _pil()
     try:
         with Image.open(path) as im:
             w, h = im.size
@@ -436,7 +455,7 @@ def _vision_read(path: Path):
 
 def _zxing_read(path: Path) -> list[dict]:
     import zxingcpp
-    from PIL import Image
+    Image = _pil()
     with Image.open(path) as im:
         return [{"symbology": str(b.format).split(".")[-1], "payload": b.text}
                 for b in zxingcpp.read_barcodes(im) if b.text]
@@ -520,7 +539,7 @@ def iter_images(src: Path, limit: int | None = None):
 
 def fallback_date(path: Path) -> str | None:
     """When the filename carries no date: EXIF DateTimeOriginal, else the file's modification time."""
-    from PIL import Image
+    Image = _pil()
     try:
         with Image.open(path) as im:
             exif = im.getexif()
