@@ -1,0 +1,22 @@
+name: tests
+
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop, main]
+
+jobs:
+  test:
+    # macOS: extraction uses Apple Vision (OCR + barcodes); the end-to-end tests need it.
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install
+        run: uv sync --locked
+      - name: Test
+        run: uv run pytest -q
