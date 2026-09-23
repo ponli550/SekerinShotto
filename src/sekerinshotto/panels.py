@@ -183,14 +183,14 @@ CONFIRM = ("sh -c 'sekerinshotto {cmd}; printf \"\\ntype {word} to commit, anyth
 # Titles must match [A-Za-z0-9_-]+: `panvim new` writes them unquoted, and `panvim audit` only recognises
 # that form when it matches state dirs to panels.
 SPECS = {
-    "ss": ("SekerinShotto", "home", 10, False, "86x40"),
-    "ss-class": ("ss-categories", "class", 30, True, "70x34"),
-    "ss-concepts": ("ss-concepts", "concepts", 60, True, "70x40"),
-    "ss-groups": ("ss-groups", "groups", 30, True, "96x34"),
-    "ss-audit": ("ss-audit", "audit", 15, True, "120x36"),
-    "ss-quarantine": ("ss-quarantine", "quarantine", 1, True, "110x36"),
-    "ss-notes": ("ss-notes", "notes", 30, True, "110x40"),
-    "ss-results": ("ss-results", "results", 2, True, "110x40"),
+    "ss": ("SekerinShotto", "home", 10, False, "95%x90%"),
+    "ss-class": ("ss-categories", "class", 30, True, "95%x90%"),
+    "ss-concepts": ("ss-concepts", "concepts", 60, True, "95%x90%"),
+    "ss-groups": ("ss-groups", "groups", 30, True, "95%x90%"),
+    "ss-audit": ("ss-audit", "audit", 15, True, "95%x90%"),
+    "ss-quarantine": ("ss-quarantine", "quarantine", 1, True, "95%x90%"),
+    "ss-notes": ("ss-notes", "notes", 30, True, "95%x90%"),
+    "ss-results": ("ss-results", "results", 2, True, "95%x90%"),
 }
 
 
@@ -305,17 +305,21 @@ def _repair_wrappers() -> list[str]:
 
 
 def _sync_registry_titles(registry: Path) -> list[str]:
-    """Keep the title column of our own ss* rows in popups.conf equal to the wrapper's title, so
-    `panvim audit` can match their state dirs. Other rows are never touched."""
+    """Keep the title and size columns of our own ss* rows in popups.conf equal to SPECS (the title so
+    `panvim audit` can match state dirs; the size so the side-pane results board has room).
+    Other rows are never touched."""
     if not registry.exists():
         return []
     fixed, out = [], []
     for line in registry.read_text().splitlines(keepends=True):
         cols = line.rstrip("\n").split("\t")
-        if not line.startswith("#") and len(cols) >= 5 and cols[0] in SPECS and cols[3] != SPECS[cols[0]][0]:
-            cols[3] = SPECS[cols[0]][0]
-            line = "\t".join(cols) + "\n"
-            fixed.append(f"{cols[0]} (registry title)")
+        if not line.startswith("#") and len(cols) >= 5 and cols[0] in SPECS:
+            title, _view, _iv, _hidden, size = SPECS[cols[0]]
+            w, h = size.split("x")
+            if (cols[1], cols[2], cols[3]) != (w, h, title):
+                cols[1], cols[2], cols[3] = w, h, title
+                line = "\t".join(cols) + "\n"
+                fixed.append(f"{cols[0]} (registry title/size)")
         out.append(line)
     if fixed:
         registry.write_text("".join(out))

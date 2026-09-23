@@ -425,7 +425,7 @@ Keys follow pan's convention: lowercase = read-only; UPPERCASE runs the plan, th
 
 | Panel | Rows | Keys |
 |---|---|---|
-| `ss` (visible) | image states, next purge countdown, categories, to-do counts | h c k g a p n: panels · s search · w status · C cleanup · O organize |
+| `ss` (visible, all ss* panels 95%×90% of the terminal) | image states, next purge countdown, categories, to-do counts | h c k g a p n: panels · s search · w status · C cleanup · O organize |
 | `ss-class` | category, count, rule vs caller | l list the category |
 | `ss-concepts` | key term, notes | l notes with the term |
 | `ss-groups` | group, copies, best copy | o open the hub note |
