@@ -5,7 +5,7 @@ vault wrapper manages an Obsidian vault. Neither imports the other. They meet
 only at the files and the JSON described here. Any future ingester (PDF, web
 clip, …) that writes this format plugs into the same wrapper.
 
-Status: draft v0.23.0 — 2026-09-23.
+Status: draft v0.24.0 — 2026-09-23.
 
 ## 1. CLI contract (both tools)
 
@@ -415,7 +415,10 @@ records what it shows (a UI setting in `~/.cache/sekerinshotto/results.json`, no
 renders one row per note with a headline — the first content line containing a query word, else one
 containing a key term, else the longest informative line; status bar, clocks and UI words skipped;
 redacted. `show` renders a card (category and why, image state, group, terms, links, QR, text).
-Side-pane keys that only print (`show`) are piped into `less -R`: panvim's `term-side`
+Cards (`v`, Enter on a note) open in read-only nvim reading stdin (top-aligned, wrapped, `/` search, `q`
+closes); `less` inside panvim's terminal pane rendered bottom-aligned. Card text is the content area only:
+status/gesture-bar lines, clocks and bare symbols are dropped, with the count shown.
+Side-pane keys that only print are piped into `less -R` or the nvim viewer: panvim's `term-side`
 closes its pane when the command exits, which made them flash and vanish. Titles are `[A-Za-z0-9_-]+`
 (`panvim new` writes them unquoted and `panvim audit` only matches that form); `panels install` repairs
 older wrappers and syncs the registry title column of `ss*` rows only.
@@ -440,7 +443,11 @@ because panvim resolves a row from the first token of the line.
 
 Key terms never include a word the PII redactor removed anywhere, a common Malaysian given name, or a
 word in `<state>/stopterms.txt` (for names the redactor misses; applied on the next `organize`).
-Redaction also catches bare names anchored on a common given name (`Mohamad Zarif Iman`).
+Redaction also catches bare names anchored on a common given name (`Mohamad Zarif Iman`), and profile
+author lines by context: a 2–4-word capitalised line whose very next meaningful line is a connection
+marker (`• 1st`) or a job title (`Senior Lecturer …`), unless it contains an organisation word
+(Program, Express, Services, University…). On the trial: 21 lines redacted this way, 0 false positives
+left after the organisation-word filter (3 before).
 
 Keys follow pan's convention: lowercase = read-only; UPPERCASE runs the plan, then asks the user to type
 `yes` (`purge` for purge) before committing. No key passes `--commit` on its own; a test enforces it.

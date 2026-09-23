@@ -904,8 +904,9 @@ def cmd_show(a, state: State):
     qrs = [redact_qr(q) for q in rec["entities"]["qr"]]
     if qrs:
         card += ["", "qr:"] + [f"  {q['type']}: {q['payload'][:80]}" for q in qrs]
-    body = [l for l in text.split("\n") if l.strip()]
-    card += ["", f"text (redacted, {n} removed):", ""] + [f"  {l}" for l in body] + ["", f"note: {r['note_path']}"]
+    body, hidden = pv.content_only(rec, text)
+    card += ["", f"text (redacted, {n} removed; {hidden} status-bar/noise lines hidden):", ""]
+    card += [f"  {l}" for l in body] + ["", f"note: {r['note_path']}"]
     human = "\n".join(card) + "\n"
     return Result({"id": iid, "note": r["note_path"], "text": text, "redactions": n,
                    "urls": urls, "qr": [redact_qr(q) for q in rec["entities"]["qr"]],
