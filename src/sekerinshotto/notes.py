@@ -14,8 +14,9 @@ USER_TAIL = "\n\n## Notes\n\n"
 
 OWNED_KEYS = ["id", "ingester", "ingester_version", "source_type", "source_app", "captured_at",
               "ingested", "status", "status_reason", "category", "decided_by", "urls", "urls_unverified", "urls_corrected", "domains",
-              "qr", "tags"]
+              "qr", "group", "rank", "group_size", "members", "tags"]
 WRITEBACK_KEYS = ("category", "decided_by")      # kept when a caller (llm/user/laya) decided them
+WRITEBACK_BY = ("llm", "user", "laya")
 _SKIP_PKG = {"com", "org", "net", "my", "io", "co", "app", "android"}
 
 
@@ -30,9 +31,18 @@ def app_slug(pkg: str | None) -> str:
     return (toks[0] if toks else pkg.split(".")[-1])[:24]
 
 
-def note_relpath(ex: Extraction, category: str = "uncategorized") -> str:
+def note_filename(ex: Extraction) -> str:
     date = (ex.captured_at or "undated")[:10]
-    return f"notes/{category}/{date}-{app_slug(ex.source_app)}-{ex.id.split(':')[1][:8]}.md"
+    return f"{date}-{app_slug(ex.source_app)}-{ex.id.split(':')[1][:8]}.md"
+
+
+def note_relpath(ex: Extraction, category: str = "uncategorized") -> str:
+    return f"notes/{category}/{note_filename(ex)}"
+
+
+def read_frontmatter(text: str) -> dict:
+    blocks, _ = _split(text)
+    return {k: _block_value(raw) for k, raw in blocks}
 
 
 def _y(v) -> str:
@@ -75,7 +85,7 @@ def _linkable(u: dict) -> bool:
     return u["verified_by"] in ("qr", "known", "crossref") and not u.get("flag")
 
 
-def generated_body(ex: Extraction) -> str:
+def generated_body(ex: Extraction, org: dict | None = None) -> str:
     out = [START, "## Text", _fence(ex.text) if ex.text.strip() else "_no text read_"]
     if ex.urls:
         out.append("## Links")
@@ -104,8 +114,12 @@ def generated_body(ex: Extraction) -> str:
             extra = ", ".join(f"{k.replace('_', ' ')}: {b[k]}" for k in ("merchant_name", "merchant_city", "amount") if k in b)
             out.append(f"- **{b['type']}** ({b['symbology']}){' · ' + extra if extra else ''}")
             out.append("  " + _fence(b["payload"]).replace("\n", "\n  "))
+    if org and org.get("group"):
+        out.append("## Group")
+        out.append(f"[[{org['group']}]] · rank {org['rank']} of {org['size']} ({org.get('score_why', '')})")
     out.append("## Source")
-    src = [f"- file: `{ex.path.name}`"]
+    src = [f"- category: **{org['category']}** — {org.get('why') or ''}"] if org else []
+    src.append(f"- file: `{ex.path.name}`")
     if ex.source_app:
         src.append(f"- app: `{ex.source_app}`")
     if ex.captured_at:
@@ -113,17 +127,19 @@ def generated_body(ex: Extraction) -> str:
     src.append(f"- size: {ex.width}×{ex.height}, {ex.bytes // 1024} KB")
     if ex.status != "ok":
         src.append(f"- **status: {ex.status}** ({ex.status_reason})")
-    out.extend(src)
+    out.append("\n".join(src))
     out.append(END)
     return "\n\n".join(out)
 
 
-def render(ex: Extraction, ingested: str, existing: str | None = None) -> str:
+def render(ex: Extraction, ingested: str, existing: str | None = None, org: dict | None = None) -> str:
+    org = org or {"category": "uncategorized", "decided_by": None}
     fm = {
         "id": ex.id, "ingester": "sekerinshotto", "ingester_version": __version__,
         "source_type": "image", "source_app": ex.source_app, "captured_at": ex.captured_at,
         "ingested": ingested, "status": ex.status, "status_reason": ex.status_reason,
-        "category": "uncategorized", "decided_by": None,
+        "category": org["category"], "decided_by": org.get("decided_by"),
+        "group": org.get("group"), "rank": org.get("rank"), "group_size": org.get("size"),
         "urls": [u["url"] for u in ex.urls if _linkable(u)],
         # no scheme, so Obsidian's Properties panel does not turn a misread into a link
         "urls_unverified": [u["url"].split("://", 1)[1] for u in ex.urls if not _linkable(u)],
@@ -139,14 +155,14 @@ def render(ex: Extraction, ingested: str, existing: str | None = None) -> str:
         if START not in body or END not in body:
             raise NoteConflict("generated markers missing")
         current = {k: _block_value(raw) for k, raw in blocks}
-        if current.get("decided_by") in ("llm", "user", "laya"):
+        if current.get("decided_by") in WRITEBACK_BY:
             for k in WRITEBACK_KEYS:
                 fm[k] = current.get(k)
         foreign = [raw for k, raw in blocks if k not in OWNED_KEYS]
         user_part = body.split(END, 1)[1]
     lines = [f"{k}: {_y(v)}" for k, v in fm.items() if v is not None and v != []]
     head = "---\n" + "\n".join(lines + foreign) + "\n---\n\n"
-    return head + generated_body(ex) + user_part
+    return head + generated_body(ex, org) + user_part
 
 
 def text_from_note(text: str) -> str:
@@ -155,15 +171,65 @@ def text_from_note(text: str) -> str:
     return m.group(2) if m else ""
 
 
-def manifest_record(ex: Extraction, batch_id: str, note_path: str, source_state: str = "present") -> dict:
+def manifest_record(ex: Extraction, batch_id: str, note_path: str, source_state: str = "present",
+                    org: dict | None = None) -> dict:
+    org = org or {"category": "uncategorized", "decided_by": None}
     return {
         "format": "shared-note/0.1", "id": ex.id, "ingester": "sekerinshotto",
         "ingester_version": __version__, "batch_id": batch_id, "source_type": "image",
         "source_path": str(ex.path), "source_state": source_state, "note_path": note_path,
         "source_app": ex.source_app, "captured_at": ex.captured_at,
-        "category": "uncategorized", "decided_by": None,
+        "category": org["category"], "decided_by": org.get("decided_by"), "why": org.get("why"),
+        "group": org.get("group"), "rank": org.get("rank"), "group_size": org.get("size"),
         "status": ex.status, "status_reason": ex.status_reason,
         "entities": {"qr": ex.barcodes, "urls": ex.urls, "domains": ex.domains},
         "text_chars": len(ex.text), "ocr_confidence": ex.ocr_confidence,
         "width": ex.width, "height": ex.height, "bytes": ex.bytes,
+        "sig": ex.sig, "toks": ex.toks, "dhash": ex.dhash, "content_tokens": ex.content_tokens,
+        "extractor_version": ex.extractor_version,
     }
+
+
+def ex_version() -> str:
+    from .extract import EXTRACTOR_VERSION
+    return EXTRACTOR_VERSION
+
+
+def extraction_from_record(rec: dict, text: str) -> Extraction:
+    """Rebuild what a note needs from a stored record, without the image (it may be purged)."""
+    ex = Extraction(id=rec["id"], path=Path(rec["source_path"]), width=rec.get("width") or 0,
+                    height=rec.get("height") or 0, bytes=rec.get("bytes") or 0,
+                    captured_at=rec.get("captured_at"), source_app=rec.get("source_app"))
+    ex.lines = [(t, 1.0) for t in text.splitlines()]
+    ex.barcodes = rec["entities"]["qr"]
+    ex.urls = rec["entities"]["urls"]
+    ex.status, ex.status_reason = rec["status"], rec.get("status_reason")
+    ex.ocr_confidence = rec.get("ocr_confidence")
+    ex.sig, ex.dhash, ex.content_tokens = rec.get("sig") or [], rec.get("dhash"), rec.get("content_tokens") or 0
+    ex.toks = rec.get("toks") or []
+    ex.extractor_version = rec.get("extractor_version") or ex_version()
+    return ex
+
+
+def render_group(gid: str, members: list[dict], existing: str | None = None) -> str:
+    """Hub note for one duplicate group. members: [{stem, rank, score_why, why_grouped}] in rank order."""
+    fm = {"id": gid, "ingester": "sekerinshotto", "ingester_version": __version__,
+          "source_type": "group", "members": len(members), "tags": ["sekerinshotto", "sekerinshotto/group"]}
+    body = [START, f"## Duplicate group · {len(members)} screenshots",
+            "Ranked by information content; rank 1 is the most complete copy.", ""]
+    body += [f"{m['rank']}. [[{m['stem']}]] · {m['score_why']}" for m in members]
+    body.append(END)
+    user_part, foreign = USER_TAIL, []
+    if existing is not None:
+        blocks, old_body = _split(existing)
+        if START not in old_body or END not in old_body:
+            raise NoteConflict("generated markers missing")
+        foreign = [raw for k, raw in blocks if k not in OWNED_KEYS]
+        user_part = old_body.split(END, 1)[1]
+    lines = [f"{k}: {_y(v)}" for k, v in fm.items()]
+    return "---\n" + "\n".join(lines + foreign) + "\n---\n\n" + "\n".join(body) + user_part
+
+
+def user_part_is_empty(text: str) -> bool:
+    _, body = _split(text)
+    return END in body and body.split(END, 1)[1].strip() in ("", "## Notes")

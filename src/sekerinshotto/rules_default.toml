@@ -1,0 +1,93 @@
+# SekerinShotto classification rules — first matching rule wins.
+#
+# Copy this file to <state>/rules.toml to replace it, then run `organize --commit`.
+#
+# A rule matches when its conditions hold (mode "any": at least one; "all": every one given):
+#   apps      package-name prefixes             ["com.whatsapp", "org.telegram"]
+#   qr_types  QR types present                  ["payment", "wifi"]
+#   domains   registrable domains of any URL    ["docs.google.com", "forms.gle"]  (suffix match)
+#   text      regexes; `text_min` distinct ones must match (default 1)
+# and then every regex in `also` must match too (e.g. an event needs a date).
+# Text is matched case-insensitively against the OCR text.
+
+[[rule]]
+category = "payment"
+mode = "any"
+qr_types = ["payment"]
+apps = ["my.com.gxbank", "com.maybank2u", "my.com.tngdigital", "com.cimb", "my.com.bankislam",
+        "com.rhbgroup", "my.com.hongleongconnect", "com.publicbank", "com.hata.exchange", "ag.jup.jupiter"]
+text = ['\b(payment|transfer|cash in|top up|reload)\s+(successful|completed|received)\b', '\b(transaction|reference)\s+(id|no)\b',
+        '\bresit\b', '\bpembayaran berjaya\b', '\bduitnow\b']
+
+[[rule]]
+category = "event"
+mode = "all"
+text = ['\b(register|registration|rsvp|apply now|sign up|join us|webinar|workshop|hackathon|bootcamp|summit|conference|competition|meetup|briefing|orientation|daftar|pendaftaran|pertandingan|program|seminar)\b']
+also = ['(\b\d{1,2}\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b|\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2}\b|\b\d{1,2}/\d{1,2}/\d{2,4}\b|\b(mon|tue|wed|thu|fri|sat|sun)[a-z]*day\b|\b(isnin|selasa|rabu|khamis|jumaat|sabtu|ahad)\b)']
+
+[[rule]]
+category = "form"
+mode = "any"
+domains = ["forms.gle", "docs.google.com", "typeform.com", "jotform.com", "tally.so"]
+
+[[rule]]
+category = "learning"
+mode = "any"
+text = ['\bcertificate of completion\b', '\b(course|lecture|tutorial|syllabus|semester|module|lesson|curriculum|cheat ?sheet|kursus|kuliah)\b',
+        '\b(assignment|submission|quiz|exam|midterm|tugasan|peperiksaan)\b',
+        '\b(machine learning|data science|deep learning|neural network|algorithm|python|javascript|sql|api)\b',
+        '\b(model|dataset|training|inference|parameters?)\b']
+text_min = 2
+
+[[rule]]
+category = "health"
+mode = "any"
+apps = ["com.hihonor.health", "com.huawei.health", "com.google.android.apps.fitness", "com.samsung.android.health"]
+text = ['\b(deep sleep|rem sleep|heart rate|blood pressure|steps|calories burned)\b']
+
+[[rule]]
+category = "shopping"
+mode = "any"
+apps = ["com.shopee", "com.lazada", "com.zalora", "com.taobao", "com.alibaba"]
+text = ['\b(add to cart|buy now|checkout|order (placed|confirmed)|free shipping|voucher)\b']
+
+[[rule]]
+category = "travel"
+mode = "any"
+apps = ["in.redbus", "com.airasia", "com.grabtaxi", "com.booking", "com.agoda", "hk.easyvan"]
+
+[[rule]]
+category = "game"
+mode = "any"
+apps = ["com.nianticlabs", "com.roblox", "com.tencent.ig", "com.supercell", "com.mojang"]
+
+[[rule]]
+category = "chat"
+mode = "any"
+apps = ["com.whatsapp", "org.telegram", "com.microsoft.teams", "com.facebook.orca", "com.discord", "jp.naver.line"]
+
+[[rule]]
+category = "email"
+mode = "any"
+apps = ["com.google.android.gm", "com.hihonor.email", "com.microsoft.office.outlook"]
+
+[[rule]]
+category = "social"
+mode = "any"
+apps = ["com.instagram", "com.linkedin", "com.ss.android.ugc", "com.zhiliaoapp", "com.facebook.katana", "com.twitter", "com.x"]
+
+[[rule]]
+category = "document"
+mode = "any"
+apps = ["com.hihonor.hnoffice", "com.microsoft.office", "com.adobe.reader", "com.google.android.apps.docs", "com.nukleus"]
+
+[[rule]]
+category = "system"
+mode = "any"
+apps = ["com.hihonor.android.launcher", "com.hihonor.assistant", "com.hihonor.magictranslate", "com.android.settings",
+        "com.google.android.apps.nexuslauncher", "com.sec.android.app.launcher", "com.android.systemui"]
+
+[[rule]]
+category = "web"
+mode = "any"
+apps = ["com.android.chrome", "org.mozilla", "com.google.android.googlequicksearchbox", "com.brave", "com.openai.chatgpt"]

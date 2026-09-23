@@ -12,7 +12,10 @@ from . import __version__
 from .contract import (AGENT_CONTRACT, COMMIT_ARG, COMMON_ARGS, EXIT_CODES, REGISTRY, SCHEMA_VERSION,
                        CONTRACT_VERSION, Arg, Result, ToolError, command)
 from .extract import EXTRACTOR_VERSION, extract, iter_images, sha256_file
-from .notes import NoteConflict, manifest_record, note_relpath, render, text_from_note
+from .notes import (NoteConflict, extraction_from_record, manifest_record, note_relpath, render, render_group,
+                    text_from_note, user_part_is_empty)
+from .organize import changed, load_items, organize
+from .rules import load as load_rules
 from .domains import DomainIndex, update as domains_update
 from .state import State, now_iso, verify_journal
 from .urlfix import fix_urls, qr_domains_of
@@ -116,35 +119,20 @@ def cmd_ingest(a, state: State):
         qr_known |= qr_domains_of([u["url"] for ex in results for u in ex.urls if u["verified_by"] == "qr"], dom)
         for ex in results:
             fix_urls(ex, dom, qr_known)
-        written, failed, conflicts, times = 0, [], [], []
         ingested = now_iso()
-        with open(manifest, "a") as mf:
-            for ex in results:
-                times.append(ex.elapsed_ms)
-                rel = note_relpath(ex)
-                prior = con.execute("SELECT note_path FROM items WHERE id=?", (ex.id,)).fetchone()
-                if prior and prior["note_path"]:
-                    rel = prior["note_path"]           # a note keeps its path once written
-                path = content / rel
-                existing = path.read_text() if path.exists() else None
-                try:
-                    body = render(ex, ingested, existing)
-                except NoteConflict:
-                    conflicts.append({"id": ex.id, "note": rel})
-                    continue
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(body)
-                journal.append(op="update" if existing is not None else "create", id=ex.id,
-                               path=str(path), batch_id=batch_id)
-                rec = manifest_record(ex, batch_id, rel)
-                mf.write(json.dumps(rec, ensure_ascii=False) + "\n")
-                _index(con, rec, ex.text, ingested)
-                written += 1
-                if ex.status != "ok":
-                    failed.append({"id": ex.id, "file": ex.path.name, "reason": ex.status_reason})
+        fresh = set()
+        for ex in results:
+            prior = con.execute("SELECT note_path FROM items WHERE id=?", (ex.id,)).fetchone()
+            rel = prior["note_path"] if prior and prior["note_path"] else None
+            _index(con, manifest_record(ex, batch_id, rel), ex.text, ingested)
+            fresh.add(ex.id)
+        report = apply_organization(state, con, content, journal, manifest, batch_id, ingested, force=fresh)
         con.commit()
-    data = {**plan, "committed": True, "batch_id": batch_id, "written": written,
-            "failed": failed, "conflicts": conflicts,
+    times = [ex.elapsed_ms for ex in results]
+    failed = [{"id": ex.id, "file": ex.path.name, "reason": ex.status_reason} for ex in results if ex.status != "ok"]
+    conflicts = report.pop("conflicts")
+    data = {**plan, "committed": True, "batch_id": batch_id, "written": report["notes_written"],
+            "failed": failed, "conflicts": conflicts, "organize": report,
             "urls": {**_count(u["verified_by"] for ex in results for u in ex.urls),
                      "corrected": sum(1 for ex in results for u in ex.urls if u.get("corrected")),
                      "flagged": _count(u["flag"] for ex in results for u in ex.urls if u.get("flag"))},
@@ -169,16 +157,21 @@ def _index(con, rec: dict, text: str, ingested: str) -> None:
     con.execute("DELETE FROM text_fts WHERE id=?", (rec["id"],))
     con.execute("""INSERT INTO items (id, source_path, source_app, captured_at, width, height, bytes,
                    extractor_version, source_state, status, status_reason, ocr_confidence, text_chars,
-                   note_path, batch_id, ingested_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   note_path, batch_id, ingested_at, record, category, decided_by, why, group_id, rank,
+                   group_size) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(id) DO UPDATE SET source_path=excluded.source_path,
                    extractor_version=excluded.extractor_version, status=excluded.status,
                    status_reason=excluded.status_reason, ocr_confidence=excluded.ocr_confidence,
                    text_chars=excluded.text_chars, note_path=excluded.note_path,
-                   batch_id=excluded.batch_id, ingested_at=excluded.ingested_at""",
+                   batch_id=excluded.batch_id, ingested_at=excluded.ingested_at, record=excluded.record,
+                   category=excluded.category, decided_by=excluded.decided_by, why=excluded.why,
+                   group_id=excluded.group_id, rank=excluded.rank, group_size=excluded.group_size""",
                 (rec["id"], rec["source_path"], rec["source_app"], rec["captured_at"], rec["width"],
                  rec["height"], rec["bytes"], rec.get("extractor_version", EXTRACTOR_VERSION),
                  rec["source_state"], rec["status"], rec["status_reason"], rec["ocr_confidence"],
-                 rec["text_chars"], rec["note_path"], rec["batch_id"], ingested))
+                 rec["text_chars"], rec["note_path"], rec["batch_id"], ingested,
+                 json.dumps(rec, ensure_ascii=False), rec.get("category"), rec.get("decided_by"), rec.get("why"),
+                 rec.get("group"), rec.get("rank"), rec.get("group_size")))
     ents = rec["entities"]
     for u in ents["urls"]:
         sub = u.get("flag") or ("corrected" if u.get("corrected") else None)
@@ -215,6 +208,8 @@ def cmd_status(a, state: State):
         "qr_by_type": q("SELECT subtype, COUNT(*) FROM entities WHERE kind='qr' GROUP BY subtype"),
         "top_apps": q("SELECT source_app, COUNT(*) c FROM items GROUP BY source_app ORDER BY c DESC LIMIT 10"),
         "journal": {"files": len(journals), "intact": not broken, "broken": broken},
+        "by_category": q("SELECT category, COUNT(*) FROM items GROUP BY category"),
+        "groups": con.execute("SELECT COUNT(DISTINCT group_id) FROM items WHERE group_id IS NOT NULL").fetchone()[0],
         "urls_corrected_or_flagged": q("SELECT subtype, COUNT(*) FROM entities WHERE kind='url' AND subtype IS NOT NULL GROUP BY subtype"),
         "domain_list": DomainIndex(state.dir("domains")).info or None,
     })
@@ -264,3 +259,114 @@ def cmd_domains_update(a, state: State):
     with state.lock():
         new = domains_update(state.dir("domains"))
     return Result({"committed": True, "previous": info or None, "current": new})
+
+
+# ---------------------------------------------------------------- organize
+def apply_organization(state: State, con, content: Path, journal, manifest: Path | None, batch_id: str,
+                       ingested: str, force: set[str] = frozenset(), commit: bool = True) -> dict:
+    """Classify, group and rank every item; (re)write the notes whose organization changed."""
+    rules, rules_src = load_rules(state.root)
+    items = load_items(con)
+    org = organize(items, rules, content)
+    targets = sorted(i for i in items if i in force or changed(items[i], org[i]) or not items[i]["_note_path"])
+    moves = []
+    for i in targets:
+        old = items[i]["_note_path"]
+        if old and not old.startswith(f"notes/{org[i]['category']}/"):
+            moves.append({"id": i, "from": old, "to": f"notes/{org[i]['category']}/{Path(old).name}"})
+    groups: dict[str, list[str]] = {}
+    for i, o in org.items():
+        if o["group"]:
+            groups.setdefault(o["group"], []).append(i)
+    prev_groups = {r["_prev"]["group"] for r in items.values() if r["_prev"]["group"]}
+    summary = {"rules": rules_src, "notes_to_write": len(targets), "moves": len(moves),
+               "by_category": _count(o["category"] for o in org.values()),
+               "groups": len(groups), "in_groups": sum(len(v) for v in groups.values()),
+               "groups_dissolved": sorted(prev_groups - set(groups))}
+    if not commit:
+        return {**summary, "move_list": moves[:50], "conflicts": []}
+
+    written, conflicts = 0, []
+    mf = open(manifest, "a") if manifest else None
+    try:
+        for i in targets:
+            rec, o = items[i], org[i]
+            text = rec.get("_text", "")
+            ex = extraction_from_record(rec, text)
+            old_rel = rec["_note_path"]
+            new_rel = f"notes/{o['category']}/{Path(old_rel).name}" if old_rel else note_relpath(ex, o["category"])
+            old_path, new_path = (content / old_rel) if old_rel else None, content / new_rel
+            existing = old_path.read_text() if old_path and old_path.exists() else None
+            try:
+                body = render(ex, ingested, existing, o)
+            except NoteConflict:
+                conflicts.append({"id": i, "note": old_rel})
+                continue
+            new_path.parent.mkdir(parents=True, exist_ok=True)
+            new_path.write_text(body)
+            if old_path and old_path.exists() and old_path != new_path:
+                old_path.unlink()
+                if old_path.parent != content / "notes" and not any(old_path.parent.iterdir()):
+                    old_path.parent.rmdir()               # a category folder emptied by the move
+                journal.append(op="move", id=i, path=str(new_path), from_path=str(old_path), batch_id=batch_id)
+            else:
+                journal.append(op="update" if existing is not None else "create", id=i, path=str(new_path),
+                               batch_id=batch_id)
+            new_rec = manifest_record(ex, batch_id, new_rel, rec.get("source_state", "present"), o)
+            if mf:
+                mf.write(json.dumps(new_rec, ensure_ascii=False) + "\n")
+            _index(con, new_rec, text, ingested)
+            items[i]["_note_path"] = new_rel
+            written += 1
+
+        stems = {i: Path(items[i]["_note_path"]).stem for i in items if items[i]["_note_path"]}
+        for gid, ids in groups.items():
+            ranked = sorted(ids, key=lambda i: org[i]["rank"])
+            members = [{"stem": stems.get(i, i), "rank": org[i]["rank"], "score_why": org[i]["score_why"]}
+                       for i in ranked]
+            path = content / "groups" / f"{gid}.md"
+            existing = path.read_text() if path.exists() else None
+            try:
+                body = render_group(gid, members, existing)
+            except NoteConflict:
+                conflicts.append({"id": gid, "note": f"groups/{gid}.md"})
+                continue
+            if body != existing:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(body)
+                journal.append(op="update" if existing else "create", id=gid, path=str(path), batch_id=batch_id)
+        kept = []
+        for gid in summary["groups_dissolved"]:
+            path = content / "groups" / f"{gid}.md"
+            if path.exists() and user_part_is_empty(path.read_text()):
+                path.unlink()
+                journal.append(op="delete", id=gid, path=str(path), batch_id=batch_id)
+            elif path.exists():
+                kept.append(gid)                          # the user wrote in it; leave it
+    finally:
+        if mf:
+            mf.close()
+    return {**summary, "notes_written": written, "dissolved_hubs_kept": kept, "conflicts": conflicts}
+
+
+@command("organize", "Re-apply classification rules, duplicate groups and ranking to every note",
+         writes=True,
+         details="Plan: reports category counts, groups, and which notes would be written or moved. "
+                 "Commit: rewrites only notes whose category, group or rank changed, moving them to "
+                 "notes/<category>/. Categories set by an LLM, the user or Laya (decided_by) are never "
+                 "overridden. Rules come from <state>/rules.toml if present, else the built-in rules. "
+                 "Exit 2 when some notes were skipped because their generated markers are gone.")
+def cmd_organize(a, state: State):
+    content = _content_root(state, None, required=True)
+    con = state.connect()
+    if not a.commit:
+        return Result({"committed": False, **apply_organization(state, con, content, None, None, "", now_iso(),
+                                                                 commit=False)})
+    batch_id = now_iso().replace(":", "-") + "-organize"
+    with state.lock():
+        report = apply_organization(state, con, content, state.journal(batch_id),
+                                    state.dir("batches") / f"{batch_id}.jsonl", batch_id, now_iso())
+        con.commit()
+    conflicts = report.pop("conflicts")
+    return Result({"committed": True, "batch_id": batch_id, **report, "conflicts": conflicts},
+                  violation=bool(conflicts))

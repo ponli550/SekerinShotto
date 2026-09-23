@@ -14,7 +14,7 @@ from pathlib import Path
 
 from .contract import ToolError
 
-DB_SCHEMA_VERSION = 1
+DB_SCHEMA_VERSION = 2
 SUBDIRS = ("inbox", "held", "quarantine", "batches", "journal", "audit")
 
 # Sync engines copy index.sqlite, -wal and -shm separately and corrupt it.
@@ -171,5 +171,11 @@ def _migrate(con: sqlite3.Connection) -> None:
     CREATE INDEX IF NOT EXISTS entities_kind_value ON entities(kind, value);
     CREATE VIRTUAL TABLE IF NOT EXISTS text_fts USING fts5(id UNINDEXED, text);
     """)
-    con.execute("INSERT OR IGNORE INTO meta VALUES ('db_schema_version', ?)", (str(DB_SCHEMA_VERSION),))
+    have = {r[1] for r in con.execute("PRAGMA table_info(items)")}
+    for col, typ in (("record", "TEXT"), ("category", "TEXT"), ("decided_by", "TEXT"), ("why", "TEXT"),
+                     ("group_id", "TEXT"), ("rank", "INTEGER"), ("group_size", "INTEGER")):
+        if col not in have:                                    # additive migration, v1 -> v2
+            con.execute(f"ALTER TABLE items ADD COLUMN {col} {typ}")
+    con.execute("CREATE INDEX IF NOT EXISTS items_group ON items(group_id)")
+    con.execute("INSERT OR REPLACE INTO meta VALUES ('db_schema_version', ?)", (str(DB_SCHEMA_VERSION),))
     con.commit()
