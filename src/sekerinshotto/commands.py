@@ -1014,3 +1014,79 @@ def cmd_panel(a, state: State):
                  "sekerinshotto on PATH.")
 def cmd_panels_install(a, state: State):
     return Result(pv.install(a.commit))
+
+
+# ---------------------------------------------------------------- Laya query layer (phase 8)
+from . import laya_layer as ly  # noqa: E402
+
+
+def _cache(con):
+    con.execute("""CREATE TABLE IF NOT EXISTS laya_cache (id TEXT NOT NULL, qhash TEXT NOT NULL,
+                   model_rev TEXT NOT NULL, answer TEXT NOT NULL, at TEXT NOT NULL,
+                   PRIMARY KEY (id, qhash, model_rev))""")
+
+
+@command("ask", "Ask Laya one typed question across notes, locally; returns ranked suggestions (redacted)",
+         args=[Arg("query", "words that must appear, to pick candidates (optional)", required=False),
+               Arg("--question", 'JSON: {"type":"noul","instructions":"Is this an event I can register for?"}',
+                   required=True),
+               Arg("--checkpoint", "typed-decisions (default, most accurate) | english | multilingual",
+                   default=ly.DEFAULT_CHECKPOINT),
+               Arg("--max-candidates", "notes Laya reads at most", type=int, default=300),
+               Arg("--top", "results returned", type=int, default=20),
+               Arg("--min", "noul: minimum P(yes); choice: minimum confidence", type=float, default=0.5),
+               Arg("--choice", "choice questions: only notes whose answer is this option")] + _FILTER_ARGS,
+         details="Candidates come from the query and filters (FTS5 + index), never from Laya. Each candidate "
+                 "is given to Laya as structured facts first, then 600 chars of its text; answers are cached "
+                 "per (note, question, model revision). Read-only: nothing is tagged or moved. Answers are "
+                 "suggestions (79 % topic accuracy on the sample); act on them with `tag --quote`.")
+def cmd_ask(a, state: State):
+    import time
+    q = ly.parse_question(a.question)
+    con = state.connect()
+    _cache(con)
+    where, params = _filters(a)
+    fq = _fts_query(a.query or "")
+    if fq:
+        ids = [r[0] for r in con.execute(f"SELECT i.id FROM text_fts JOIN items i ON i.id=text_fts.id "
+                                         f"WHERE text_fts MATCH ? AND {where} ORDER BY bm25(text_fts) LIMIT ?",
+                                         [fq, *params, a.max_candidates])]
+    else:
+        ids = [r[0] for r in con.execute(f"SELECT i.id FROM items i WHERE {where} ORDER BY i.captured_at DESC "
+                                         f"LIMIT ?", [*params, a.max_candidates])]
+    rev, qh = ly.model_rev(a.checkpoint), ly.qhash(q)
+    cached = {r[0]: json.loads(r[1]) for r in con.execute(
+        f"SELECT id, answer FROM laya_cache WHERE qhash=? AND model_rev=? AND id IN ({','.join('?' * len(ids))})",
+        [qh, rev, *ids])} if ids else {}
+    todo = [i for i in ids if i not in cached]
+    t0, load_s = time.perf_counter(), 0.0
+    if todo:
+        agent = ly.load_agent(a.checkpoint)
+        load_s = time.perf_counter() - t0
+        for iid in todo:
+            rec = json.loads(con.execute("SELECT record FROM items WHERE id=?", (iid,)).fetchone()[0])
+            ans = agent.predict(ly.build_state(rec, _text(con, iid)), {"q": q})["answers"]["q"]
+            cached[iid] = ans
+            con.execute("INSERT OR REPLACE INTO laya_cache VALUES (?,?,?,?,?)",
+                        (iid, qh, rev, json.dumps(ans), now_iso()))
+        con.commit()
+    elapsed = time.perf_counter() - t0
+    scored = []
+    for iid in ids:
+        val, choice = ly.value_of(cached[iid])
+        if val < a.min or (a.choice and choice != a.choice):
+            continue
+        scored.append((val, iid, choice))
+    scored.sort(key=lambda t: (-t[0], t[1]))
+    reds: list[int] = []
+    results = []
+    for val, iid, choice in scored[:a.top]:
+        r = con.execute("SELECT i.*, substr(f.text,1,200) AS snip FROM items i JOIN text_fts f ON f.id=i.id "
+                        "WHERE i.id=?", (iid,)).fetchone()
+        results.append({**_hit(r, r["snip"], reds), "answer": choice if choice is not None else round(val, 4),
+                        "confidence": round(float(cached[iid].get("confidence", val)), 4)})
+    return Result({"question": q, "checkpoint": a.checkpoint, "model_rev": rev, "candidates": len(ids),
+                   "answered_now": len(todo), "from_cache": len(ids) - len(todo), "matched": len(scored),
+                   "results": results, "redactions": sum(reds),
+                   "timing": {"load_s": round(load_s, 1), "total_s": round(elapsed, 1)},
+                   "note": "suggestions, not decisions: act with `tag <id> --category ... --quote ...`"})

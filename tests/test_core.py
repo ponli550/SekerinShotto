@@ -626,3 +626,58 @@ def test_panels_render_read_only_and_never_show_text(sample):
     path = subprocess.run([sys.executable, "-m", "sekerinshotto.cli", "panel", "path",
                            next((content / "notes").rglob("*.md")).stem], capture_output=True, text=True, env=env)
     assert Path(path.stdout.strip()).exists()
+
+
+# ---------------------------------------------------------------- Laya query layer (phase 8)
+import argparse as _ap
+
+from sekerinshotto import laya_layer as ly
+from sekerinshotto.commands import cmd_ask
+from sekerinshotto.state import State as _State
+
+
+class _FakeAgent:
+    def __init__(self):
+        self.calls, self.states = 0, []
+
+    def predict(self, state, questions):
+        self.calls += 1
+        self.states.append(state)
+        yes = 0.9 if "register" in state.lower() else 0.1
+        return {"answers": {"q": {"type": "noul", "noul": yes, "confidence": max(yes, 1 - yes)}}}
+
+
+def test_question_validation():
+    with pytest.raises(ToolError):
+        ly.parse_question("not json")
+    with pytest.raises(ToolError):
+        ly.parse_question('{"type":"choice","instructions":"x"}')          # choice needs criteria
+    assert ly.parse_question('{"type":"noul","instructions":"x"}')["type"] == "noul"
+
+
+def test_state_puts_facts_before_text():
+    rec = {"source_app": "com.x", "category": "event", "entities": {"qr": [{"type": "url"}], "domains": ["a.my"]},
+           "terms": ["hackathon"]}
+    st = ly.build_state(rec, "T" * 5000)
+    assert st.index("domains: a.my") < st.index("---") and st.count("T") == ly.STATE_CHARS
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Apple Vision")
+def test_ask_ranks_caches_and_never_writes(sample, monkeypatch):
+    src, content, env = sample
+    _run("ingest", str(src), "--content", str(content), "--commit", env=env)
+    monkeypatch.setenv("SEKERINSHOTTO_STATE", env["SEKERINSHOTTO_STATE"])
+    fake = _FakeAgent()
+    monkeypatch.setattr(ly, "load_agent", lambda cp: fake)
+    note_before = next((content / "notes").rglob("*.md")).read_text()
+    args = _ap.Namespace(query=None, question='{"type":"noul","instructions":"Is this an event?"}',
+                         checkpoint="typed-decisions", max_candidates=10, top=5, min=0.5, choice=None,
+                         category=None, domain=None, app=None, since=None, until=None, group=None,
+                         source_state=None, limit=20, offset=0)
+    state = _State(Path(env["SEKERINSHOTTO_STATE"]))
+    d = cmd_ask(args, state).data
+    assert d["answered_now"] == 1 and d["results"][0]["answer"] == 0.9 and fake.calls == 1
+    assert "app: com.android.chrome" in fake.states[0]                      # Laya got facts, not the DB
+    d2 = cmd_ask(args, state).data
+    assert d2["from_cache"] == 1 and fake.calls == 1                         # cached
+    assert next((content / "notes").rglob("*.md")).read_text() == note_before  # read-only

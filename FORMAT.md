@@ -5,7 +5,7 @@ vault wrapper manages an Obsidian vault. Neither imports the other. They meet
 only at the files and the JSON described here. Any future ingester (PDF, web
 clip, …) that writes this format plugs into the same wrapper.
 
-Status: draft v0.13.0 — 2026-09-23.
+Status: draft v0.14.0 — 2026-09-23.
 
 ## 1. CLI contract (both tools)
 
@@ -307,29 +307,32 @@ visual check (a re-screenshot in the gallery, a toast-only change, a certificate
 document page vs a crop of one section, one calendar shown four ways). Two fresh runs produce identical
 categories, group ids and files.
 
-## 7. Laya — query layer, after everything
+## 7. Laya — query layer, after everything (implemented)
 
-Laya is not a pipeline step. It never changes extraction, folders, or cleanup. It runs only after a batch is
-extracted and tidied, as a tool the calling LLM uses directly over the finished notes.
+Laya is not a pipeline step. It never changes extraction, folders, cleanup or categories. It runs only
+when the calling LLM asks, over finished notes, as the optional extra `sekerinshotto[laya]` (laya-mlx,
+Apple Silicon). Without it, `ask` exits 1 with the install line and nothing else is affected.
 
-- Purpose: the LLM asks a typed question (`choice`, `score`, `noul`) across many notes; Laya answers each note
-  locally in milliseconds; the LLM reads only the top results instead of every note's text.
-- Flow: search the index first (SQLite FTS on OCR text, or filters such as category/domain) to pick candidates,
-  then ask Laya over those candidates. Searching the folder directly is also exposed, without Laya.
-- Instructions for the LLM live in the schema's `agent_contract`: how to phrase typed questions, that Laya reads
-  only the first 512–1024 tokens of a note, that answers are suggestions with a confidence, and that it never
-  edits notes itself.
-- Laya never sees the DB, paths, or SQL. SekerinShotto selects candidates, builds each note's "state",
-  calls Laya, and stores the answers. Laya is a pure function: (state, questions) → answers.
-- State is built structured-fields-first (category, domains, URLs, QR type, then OCR text) so the
-  512–1024-token cut drops the text tail, not the facts.
-- Answers are cached in the DB keyed by (note `id`, question hash, `model_rev`); a new model rev
-  invalidates the cache automatically.
-- The LLM gets filters (category, domain, date range, group, full-text), never raw SQL — raw SQL would
-  bypass dry-run/`--commit`.
-- Write-back: if the LLM acts on a Laya answer, it writes through the normal `--commit` path with
-  `decided_by: laya` (or `llm`), and the note records `model_rev`.
-- Optional install; if missing, the query commands exit `1` with a clear reason. Nothing else depends on it.
+`ask [QUERY] --question JSON [filters] [--checkpoint] [--max-candidates 300] [--top 20] [--min 0.5] [--choice X]`
+- Candidates come from the query (FTS5) and filters, never from Laya.
+- Each candidate reaches Laya as structured facts first (app, rule category, QR types, domains, key
+  terms), then the first 600 chars of its OCR text. Laya never sees the DB, paths or SQL.
+- One typed question per call: `noul` (ranked by P(yes)), `choice` (by confidence, `--choice` filters an
+  option), `score`. Answers are cached in `laya_cache` by (note id, question hash, model revision); a new
+  model revision re-asks automatically.
+- Read-only. Results carry redacted excerpts, the answer and its confidence. The LLM acts with
+  `tag --quote`, which must still quote the screenshot text verbatim.
+
+Measured on the 182-screenshot sample, topic accuracy against rule labels (53 items):
+
+| Checkpoint | Accuracy | Note |
+|---|---|---|
+| `typed-decisions` (default) | 79 % | most accurate |
+| `english` | 62 % | |
+| `multilingual` | 40 % | least accurate and most confident on this data; not recommended |
+
+Structured facts + 600 chars: ~49–66 ms per note after the model is loaded (a full pass over 182 notes
+took 12 s; the same question again came from cache in 0 s). Raw long text was ~1.2 s per note.
 
 ## 7a. Redaction and text commands (implemented)
 
