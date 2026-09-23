@@ -238,8 +238,8 @@ def test_resolve(dom, raw, host, corrected):
 
 def test_resolve_flags_impossible_tld_and_uses_qr_crossref(dom):
     assert resolve("www.ome", dom, set())["flag"] == "invalid_tld"
-    r = resolve("kitahack2O26.my", dom, {"kitahack2026.my"})
-    assert r == {**r, "host": "kitahack2026.my", "verified_by": "crossref", "corrected": True}
+    r = resolve("hackfest2O26.my", dom, {"hackfest2026.my"})
+    assert r == {**r, "host": "hackfest2026.my", "verified_by": "crossref", "corrected": True}
     assert resolve("unknownsite.my", dom, set())["verified_by"] == "none"
 
 
@@ -250,7 +250,7 @@ def test_candidates_prefer_fewest_edits():
 
 def test_psl_registrable():
     psl = PSL("com\nmy\ncom.my\n*.ck\n!www.ck\n")
-    assert psl.registrable("a.b.trainocate.com.my") == "trainocate.com.my"
+    assert psl.registrable("a.b.shop.com.my") == "shop.com.my"
     assert psl.registrable("docs.google.com") == "google.com"
     assert psl.registrable("com.my") is None
     assert psl.registrable("a.b.ck") == "a.b.ck" and psl.registrable("www.ck") == "www.ck"
