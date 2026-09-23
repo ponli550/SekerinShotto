@@ -797,6 +797,21 @@ def _fts_query(q: str) -> str:
     return " ".join('"' + w.replace('"', '') + '"' for w in words)
 
 
+def _human_hits(title: str, hits: list[dict]) -> str:
+    """Readable list for a terminal pane: one header line per note, then a one-line excerpt."""
+    out = [title, ""]
+    for h in hits:
+        date = (h.get("captured_at") or "")[:16].replace("T", " ")
+        app = (h.get("app") or "").split(".")[-1]
+        extra = f"  answer {h['answer']}" if "answer" in h else ""
+        out.append(f"{h['id'].split(':')[1][:8]}  {h['category']:<13} {date:<16}  {app:<12} {h['source_state']}{extra}")
+        excerpt = " · ".join(x.strip() for x in (h.get("excerpt") or "").splitlines() if x.strip())
+        out.append(f"          {excerpt[:150]}")
+        out.append(f"          {h.get('note') or ''}")
+        out.append("")
+    return "\n".join(out) + "\n"
+
+
 def _hit(r, snippet: str | None, redactions: list) -> dict:
     text, n = redact(snippet or "")
     redactions.append(n)
@@ -830,8 +845,9 @@ def cmd_search(a, state: State):
         total = con.execute(f"SELECT COUNT(*) FROM items i WHERE {where}", params).fetchone()[0]
     reds: list[int] = []
     hits = [_hit(r, r["snip"], reds) for r in rows]
-    return Result({"query": a.query or "", "total": total, "returned": len(hits), "offset": a.offset,
-                   "redactions": sum(reds), "results": hits})
+    data = {"query": a.query or "", "total": total, "returned": len(hits), "offset": a.offset,
+            "redactions": sum(reds), "results": hits}
+    return Result(data, human=_human_hits(f"search {a.query or ''!r}: {total} notes (excerpts redacted)", hits))
 
 
 @command("list", "List notes by category or state, newest first; excerpts are redacted",
@@ -845,9 +861,12 @@ def cmd_list(a, state: State):
                        [*params, a.limit, a.offset]).fetchall()
     total = con.execute(f"SELECT COUNT(*) FROM items i WHERE {where}", params).fetchone()[0]
     reds: list[int] = []
-    return Result({"total": total, "returned": len(rows), "offset": a.offset,
-                   "results": [_hit(r, r["snip"], reds) for r in rows], "redactions": sum(reds),
-                   "categories": _count(r[0] for r in con.execute("SELECT category FROM items"))})
+    hits = [_hit(r, r["snip"], reds) for r in rows]
+    label = a.category or ("uncategorized" if a.uncategorized else "all")
+    return Result({"total": total, "returned": len(rows), "offset": a.offset, "results": hits,
+                   "redactions": sum(reds),
+                   "categories": _count(r[0] for r in con.execute("SELECT category FROM items"))},
+                  human=_human_hits(f"{label}: {total} notes, newest first (excerpts redacted)", hits))
 
 
 @command("show", "One item in full: text, URLs, QR codes, category, group, image state (redacted)",

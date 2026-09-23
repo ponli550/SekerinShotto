@@ -484,6 +484,15 @@ from sekerinshotto.commands import _fts_query
 @pytest.mark.parametrize("text,out", [
     ("+60 12-256 7486 said hi", "[PHONE] said hi"),
     ("call 012-345 6789", "call [PHONE]"),
+    ("+6017-483 56...", "[PHONE]"),                                 # cut off on screen: still personal
+    ("room 012-345", "room [PHONE]"),
+    ("Alamat: No 3, Persiaran Seksyen 3/4, Bandar Bertam", "Alamat: [ADDRESS]"),
+    ("Blok 21 Taman Bukit Angkasa, Jalan 7/112A", "[ADDRESS]"),
+    ("Kuala Lumpur, 59200 Malaysia", "Kuala Lumpur, [ADDRESS]"),
+    ("LAT: 3.1100393, LNG: 101.6694288", "[LOCATION], [LOCATION]"),
+    ("pin 3.1100393, 101.6694288 here", "pin [LOCATION] here"),
+    ("jalan-jalan cari makan", "jalan-jalan cari makan"),          # lowercase Malay word, not a street
+    ("Score 3.5, rating 4.2", "Score 3.5, rating 4.2"),
     ("IC 900101-14-5678 ok", "IC [IC] ok"),
     ("ref 991399-12-3456", "ref 991399-12-3456"),             # not a valid YYMMDD: a reference number
     ("Prepared by Ahmad Bin Ali", "Prepared by [NAME]"),
@@ -495,6 +504,12 @@ from sekerinshotto.commands import _fts_query
 ])
 def test_redact(text, out):
     assert redact(text)[0] == out
+
+
+def test_address_continuation_lines_are_redacted():
+    text = "COD ORDER 26/12/25\nAlamat: No 3, Persiaran Seksyen\n3/4, Bandar Bertam Putra, 13200\nKepala Batas, Pulau Pinang.\nNama: X\nThank you"
+    out = redact(text)[0].split("\n")
+    assert out == ["COD ORDER 26/12/25", "Alamat: [ADDRESS]", "[ADDRESS]", "[ADDRESS]", "Nama: X", "Thank you"]
 
 
 def test_redact_keeps_lines():
@@ -825,7 +840,8 @@ def test_state_resolution_order(tmp_path, monkeypatch):
 
 
 def test_panel_titles_have_no_spaces_and_reasons_are_short():
-    assert all(" " not in title for title, *_ in pv.SPECS.values())     # panvim new writes titles unquoted
+    import re as _re
+    assert all(_re.fullmatch(r"[A-Za-z0-9_-]+", t) for t, *_ in pv.SPECS.values())   # panvim new + audit form
     assert pv._short_reason("unverified URL: https://a.my/very/long/path, www.b.com") == "unverified URL: a.my, www.b.com"
     assert pv._short_reason("no_text") == "no_text"
 
@@ -836,4 +852,13 @@ def test_repair_wrappers_quotes_the_title(tmp_path, monkeypatch):
     w = tmp_path / ".local" / "bin" / "ss-audit-popup"
     w.write_text("#!/bin/bash\nexec panvim view --title ss · audit \\\n  --render 'x' --interval 15\n")
     assert pv._repair_wrappers() == ["ss-audit"]
-    assert "--title 'ss·audit' \\\n" in w.read_text() and pv._repair_wrappers() == []   # idempotent
+    assert "--title ss-audit \\\n" in w.read_text() and pv._repair_wrappers() == []   # idempotent
+
+
+@pytest.mark.parametrize("name", list(pv.SPECS))
+def test_side_pane_keys_run_something_that_stays_open(name):
+    """term-side closes when its command exits; a printing command must be paged."""
+    for line in pv.keys_for(name).splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 4 and ("term-side" in parts[2]):
+            assert parts[3].startswith("nvim ") or parts[3].rstrip().endswith("| less -R"), line
