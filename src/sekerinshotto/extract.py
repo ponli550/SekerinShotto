@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
-EXTRACTOR_VERSION = "5"
+EXTRACTOR_VERSION = "6"
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".heic", ".webp", ".tif", ".tiff", ".bmp", ".gif"}
 
 FAIL_MIN_CHARS = 3            # fewer chars and no barcode -> failed/no_text
@@ -243,21 +243,39 @@ def jaccard_est(a: list[int], b: list[int]) -> float:
     return sum(x == y for x, y in zip(a, b)) / len(a)
 
 
-def visual_metrics(path: Path, lines) -> tuple[float, int, float]:
-    """(text coverage, gray levels, edge share) of the content area. Photos and camera frames have
-    little text and rich pixels; their meaning is in the image, which OCR cannot keep."""
+_EDGE_MASK = bytes(1 if i > 60 else 0 for i in range(256))
+
+
+def _long_runs(mask: bytes, width: int, height: int, min_run: int, vertical: bool) -> int:
+    """How many rows (or columns) contain an unbroken edge run of at least min_run pixels."""
+    needle = b"\x01" * min_run
+    if not vertical:
+        return sum(1 for y in range(height) if needle in mask[y * width:(y + 1) * width])
+    return sum(1 for x in range(width) if needle in mask[x::width])
+
+
+def visual_metrics(path: Path, lines) -> dict:
+    """Image measurements used by cleanup (FORMAT §6):
+    text coverage / gray levels / edges -> photos; long straight lines + low saturation -> diagrams."""
     from PIL import Image, ImageFilter
     content = [l for l in lines if len(l) > 2 and CHROME_TOP <= l[2][1] <= CHROME_BOTTOM]
-    cov = sum(l[2][2] * l[2][3] for l in content) / (CHROME_BOTTOM - CHROME_TOP)
+    out = {"text_coverage": round(sum(l[2][2] * l[2][3] for l in content) / (CHROME_BOTTOM - CHROME_TOP), 4),
+           "grays": 0, "edges": 0.0, "hlines": 0, "vlines": 0, "saturation": 0.0}
     try:
         with Image.open(path) as im:
             g = im.crop((0, int(im.height * CHROME_TOP), im.width, int(im.height * CHROME_BOTTOM)))
-            g = g.convert("L").resize((300, 600))
-            edges = sum(1 for p in g.filter(ImageFilter.FIND_EDGES).tobytes() if p > 40) / (300 * 600)
-            grays = len(set(g.resize((60, 120)).tobytes()))
-    except Exception:  # noqa: BLE001
-        return round(cov, 4), 0, 0.0
-    return round(cov, 4), grays, round(edges, 4)
+            small = g.convert("L").resize((300, 600))
+            e = small.filter(ImageFilter.FIND_EDGES).tobytes()
+            out["edges"] = round(sum(1 for p in e if p > 40) / (300 * 600), 4)
+            out["grays"] = len(set(small.resize((60, 120)).tobytes()))
+            mask = e.translate(_EDGE_MASK)
+            out["hlines"] = _long_runs(mask, 300, 600, 90, vertical=False)      # >= 30 % of the width
+            out["vlines"] = _long_runs(mask, 300, 600, 90, vertical=True)       # >= 15 % of the height
+            hsv = g.convert("HSV").resize((150, 300)).tobytes()
+            out["saturation"] = round(sum(1 for i in range(1, len(hsv), 3) if hsv[i] > 80) / (150 * 300), 4)
+    except Exception:  # noqa: BLE001 - measurements are optional
+        pass
+    return out
 
 
 def dhash_of(path: Path) -> str | None:
@@ -306,6 +324,9 @@ class Extraction:
     text_coverage: float = 0.0                        # share of the content area covered by text boxes
     grays: int = 0                                    # distinct gray levels in a 60x120 thumbnail
     edges: float = 0.0                                # share of strong-edge pixels
+    hlines: int = 0                                   # rows with a long horizontal edge (tables, boxes)
+    vlines: int = 0                                   # columns with a long vertical edge
+    saturation: float = 0.0                           # share of strongly coloured pixels (posters are high)
     # lifecycle (FORMAT §6); set by cleanup, carried through re-renders
     source_state: str = "present"
     stored_path: str | None = None
@@ -441,7 +462,9 @@ def _extract(path: Path, file_id: str | None = None) -> Extraction:
 
     ex.toks = token_hashes(content_tokens(ex.lines))
     ex.content_tokens, ex.sig, ex.dhash = len(ex.toks), minhash(ex.toks), dhash_of(path)
-    ex.text_coverage, ex.grays, ex.edges = visual_metrics(path, ex.lines)
+    vm = visual_metrics(path, ex.lines)
+    ex.text_coverage, ex.grays, ex.edges = vm["text_coverage"], vm["grays"], vm["edges"]
+    ex.hlines, ex.vlines, ex.saturation = vm["hlines"], vm["vlines"], vm["saturation"]
 
     chars = sum(len(t[0]) for t in ex.lines)
     if chars:

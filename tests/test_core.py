@@ -684,3 +684,43 @@ def test_ask_ranks_caches_and_never_writes(sample, monkeypatch):
     d2 = cmd_ask(args, state).data
     assert d2["from_cache"] == 1 and fake.calls == 1                         # cached
     assert next((content / "notes").rglob("*.md")).read_text() == note_before  # read-only
+
+
+# ---------------------------------------------------------------- diagrams (phase: keep tables and slides)
+from sekerinshotto.extract import _long_runs, visual_metrics
+
+
+@pytest.mark.parametrize("extra,outcome", [
+    ({"hlines": 30, "vlines": 2, "saturation": 0.05}, "attach"),                      # a table
+    ({"hlines": 2, "vlines": 12, "saturation": 0.10}, "attach"),                      # slide thumbnails
+    ({"hlines": 30, "vlines": 2, "saturation": 0.60}, "quarantine"),                  # a colourful poster
+    ({"hlines": 30, "vlines": 2, "saturation": 0.05, "category": "game"}, "quarantine"),   # game HUD
+    ({"hlines": 30, "vlines": 2, "saturation": 0.05,
+      "entities": {"qr": [{"type": "payment", "payload": "p"}], "urls": [], "domains": []}}, "quarantine"),
+    ({"hlines": 5, "vlines": 3, "saturation": 0.05}, "quarantine"),                   # plain text
+])
+def test_diagram_rule(extra, outcome):
+    assert lc.decide(_crec(**extra))[0] == outcome
+
+
+def test_long_runs_counts_rows_and_columns():
+    w, h = 10, 6
+    mask = bytearray(w * h)
+    for x in range(10):
+        mask[2 * w + x] = 1                    # one full horizontal line on row 2
+    for y in range(6):
+        mask[y * w + 7] = 1                    # one full vertical line on column 7
+    assert _long_runs(bytes(mask), w, h, 8, vertical=False) == 1
+    assert _long_runs(bytes(mask), w, h, 5, vertical=True) == 1
+
+
+def test_grid_image_measures_as_a_diagram(tmp_path):
+    img = Image.new("RGB", (1200, 2640), "white")
+    d = ImageDraw.Draw(img)
+    for y in range(300, 2400, 120):
+        d.line((100, y, 1100, y), fill="black", width=3)
+    for x in (100, 500, 1100):
+        d.line((x, 300, x, 2400), fill="black", width=3)
+    img.save(tmp_path / "table.png")
+    m = visual_metrics(tmp_path / "table.png", [])
+    assert m["hlines"] >= 14 and m["saturation"] < 0.05
