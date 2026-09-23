@@ -31,7 +31,9 @@ def test_non_android_filename_has_no_metadata():
 
 @pytest.mark.parametrize("name,app,when", [
     ("WhatsApp Image 2026-08-10 at 16.26.05.jpeg", "com.whatsapp", "2026-08-10T16:26:05"),
-    ("Screenshot 2026-01-02 at 3.45.12 PM.png", "com.apple.macos", "2026-01-02T15:45:12"),
+    ("Screenshot 2026-01-02 at 3.45.12 PM.png", "com.apple.macos.screenshot", "2026-01-02T15:45:12"),
+    ("Screenshot 2026-09-13 at 12.29.50 AM.png", "com.apple.macos.screenshot", "2026-09-13T00:29:50"),
+    ("Screenshot 2026-09-13 at 12.05.00 PM.png", "com.apple.macos.screenshot", "2026-09-13T12:05:00"),
     ("IMG_20251203_101500.jpg", None, "2025-12-03T10:15:00"),
     ("PXL_20251203_101500123.jpg", None, "2025-12-03T10:15:00"),
 ])
@@ -974,7 +976,7 @@ def test_drilldown_opens_results_on_top_not_in_the_side_pane():
 
 @pytest.mark.parametrize("pkg,slug", [("ag.jup.jupiter.android", "jupiter"), ("com.whatsapp.w4b", "whatsapp"),
                                       ("my.com.gxbank.app", "gxbank"), ("com.ss.android.ugc.trill", "trill"),
-                                      ("com.x", "x")])
+                                      ("com.x", "x"), ("com.apple.macos.screenshot", "macos")])
 def test_app_slug(pkg, slug):
     from sekerinshotto.notes import app_slug
     assert app_slug(pkg) == slug

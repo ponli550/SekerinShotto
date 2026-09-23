@@ -1432,7 +1432,7 @@ def cmd_dropzone(a, state: State):
     say = lambda m: (sys.stdout.write(m + "\n"), sys.stdout.flush())
     say(f"DROP ZONE · {inbox}")
     say("  drop photos into the Finder window, or drag them onto this pane (then Enter)")
-    say("  Finder MOVES files between folders on the same disk: hold ⌥ Option while dropping to copy")
+    say("  Finder MOVES files between folders on the same disk: hold Option while dropping to copy")
     say("  q + Enter stops\n")
     added_total, seen = 0, set()
 

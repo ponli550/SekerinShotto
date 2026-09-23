@@ -18,7 +18,7 @@ OWNED_KEYS = ["id", "ingester", "ingester_version", "source_type", "source_app",
               "tags"]
 WRITEBACK_KEYS = ("category", "decided_by", "decided_evidence")   # kept when a caller decided them
 WRITEBACK_BY = ("llm", "user", "laya")
-_SKIP_PKG = {"com", "org", "net", "my", "io", "co", "app", "android"}
+_SKIP_PKG = {"com", "org", "net", "my", "io", "co", "app", "android", "apple"}
 
 
 class NoteConflict(Exception):
