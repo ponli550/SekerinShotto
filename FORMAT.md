@@ -302,6 +302,9 @@ date), `form`, `learning`, `health`, `shopping` — then by app — `travel`, `g
 `text 'Pendaftaran'; and '20 DECEMBER'`. English and Malay keywords.
 
 - Rules live in `rules_default.toml` inside the package; `<state>/rules.toml` replaces them.
+  `rules suggest` proposes rules from caller-set categories: a domain rule from >= 2 tags that all agree; an
+  app rule only from >= 5 that agree AND cover >= 60% of that app's notes (an app rule captures every note
+  from the app). `--apply N --commit` inserts them at the top of `<state>/rules.toml` and re-organizes.
   `organize --commit` re-applies them without re-extracting.
 - `decided_by`: `rule` for the rules; a note whose `decided_by` is `llm`, `user` or `laya` keeps its
   category, and its folder follows that category. Rules never override a caller.

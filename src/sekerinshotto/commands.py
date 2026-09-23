@@ -1718,3 +1718,86 @@ def cmd_terms_hide(a, state: State):
 @command("terms unhide", "Allow a hidden word back into key terms", args=[Arg("term", "the word")], writes=True)
 def cmd_terms_unhide(a, state: State):
     return _terms_edit(a, state, False)
+
+
+# ---------------------------------------------------------------- rule suggestions
+def _rule_suggestions(state: State, con, min_tags: int) -> list[dict]:
+    from collections import Counter, defaultdict
+    from .rules import classify, load as load_rules
+    rules, _ = load_rules(state.root)
+    rows = [(json.loads(r["record"]), r["category"], r["decided_by"]) for r in con.execute(
+        "SELECT record, category, decided_by FROM items WHERE record IS NOT NULL")]
+    tagged = [(rec, cat) for rec, cat, by in rows if by in ("llm", "user", "laya")]
+    by_domain, by_app = defaultdict(Counter), defaultdict(Counter)
+    for rec, cat in tagged:
+        for d in rec["entities"]["domains"]:
+            by_domain[d][cat] += 1
+        if rec.get("source_app"):
+            by_app[rec["source_app"]][cat] += 1
+    app_total = Counter(rec.get("source_app") for rec, _, _ in rows)
+    out = []
+    for dom, cats in sorted(by_domain.items()):
+        (cat, n), = cats.most_common(1)
+        if n < min_tags or len(cats) > 1:
+            continue                                     # too few tags, or callers disagree
+        if classify(rules, None, set(), [dom], "")[0] == cat:
+            continue                                     # the rules already say so
+        out.append({"kind": "domain", "value": dom, "category": cat, "tags": n,
+                    "reason": f"{n} notes on {dom} tagged {cat}, none tagged otherwise"})
+    for app, cats in sorted(by_app.items()):
+        (cat, n), = cats.most_common(1)
+        share = n / max(app_total[app], 1)
+        if n < max(min_tags, 5) or len(cats) > 1 or share < 0.6:
+            continue                                     # an app rule captures every note from that app:
+                                                         # >= 5 consistent tags AND >= 60% of the app's notes
+        if classify(rules, app, set(), [], "")[0] == cat:
+            continue
+        out.append({"kind": "app", "value": app, "category": cat, "tags": n,
+                    "reason": f"{n} of {app_total[app]} notes from {app} tagged {cat} ({share:.0%})"})
+    for i, sug in enumerate(out, 1):
+        key = "domains" if sug["kind"] == "domain" else "apps"
+        sug["n"] = i
+        sug["toml"] = f'[[rule]]\ncategory = "{sug["category"]}"\nmode = "any"\n{key} = ["{sug["value"]}"]\n'
+    return out
+
+
+@command("rules suggest", "Suggest rules from categories the LLM or user set, so similar notes sort themselves",
+         args=[Arg("--min", "minimum consistent tags", type=int, default=2),
+               Arg("--apply", "comma-separated suggestion numbers to add to <state>/rules.toml")],
+         writes=True,
+         details="Domain rules need >= --min tags that all agree; app rules need >= 5 that agree AND cover >= 60% "
+                 "of that app's notes, because an app rule captures every note from it. Plan: lists suggestions with "
+                 "their TOML. Commit with --apply: inserts them at the top of <state>/rules.toml (created from the "
+                 "built-in rules if absent) and re-organizes. Caller-set categories are never overridden.")
+def cmd_rules_suggest(a, state: State):
+    from importlib import resources
+    con = state.connect()
+    sug = _rule_suggestions(state, con, a.min)
+    if not a.apply:
+        human = "no suggestions yet: tag notes with `tag` (the LLM) first\n" if not sug else "".join(
+            f"{s['n']}. {s['kind']} {s['value']} → {s['category']}  ({s['reason']})\n" for s in sug)
+        return Result({"committed": False, "suggestions": sug}, human=human)
+    try:
+        pick = {int(x) for x in a.apply.split(",") if x.strip()}
+    except ValueError:
+        raise ToolError("--apply takes suggestion numbers, e.g. --apply 1,3")
+    chosen = [s for s in sug if s["n"] in pick]
+    if len(chosen) != len(pick):
+        raise ToolError(f"unknown suggestion number(s); valid: {', '.join(str(s['n']) for s in sug) or 'none'}")
+    f = state.root / "rules.toml"
+    base = f.read_text() if f.exists() else resources.files(__package__).joinpath("rules_default.toml").read_text()
+    added = "# added by `rules suggest` " + now_iso() + "\n" + "\n".join(s["toml"] for s in chosen) + "\n"
+    if not a.commit:
+        return Result({"committed": False, "would_add": added, "file": str(f)}, human=added)
+    head, sep, rest = base.partition("[[rule]]")
+    f.write_text(head + added + sep + rest)
+    from .rules import load as load_rules
+    load_rules(state.root)                                   # refuses a broken file (ToolError)
+    content = _content_root(state, None, required=True)
+    batch_id = now_iso().replace(":", "-") + "-rules"
+    with state.lock():
+        rep = apply_organization(state, con, content, state.journal(batch_id),
+                                 state.dir("batches") / f"{batch_id}.jsonl", batch_id, now_iso())
+        con.commit()
+    return Result({"committed": True, "added": [s["toml"] for s in chosen], "file": str(f),
+                   "notes_rewritten": rep["notes_written"], "by_category": rep["by_category"]})
