@@ -46,6 +46,17 @@ not be read reliably are held and retried. You never review images; `AUDIT.md` l
 State (index, manifests, signed journal) lives in `~/.local/share/sekerinshotto/`, outside any vault and
 never in a synced folder. Rerunning `ingest` skips images already extracted with the current extractor.
 
+## Panels
+
+```bash
+uv tool install --editable .          # puts `sekerinshotto` on PATH
+sekerinshotto panels install --commit # creates the ss* panels via `panvim new`
+panvim popup ss                       # home panel; h c k g a p n jump between panels
+```
+
+Panels are read-only and never show screenshot text. Uppercase keys run the plan and ask you to type
+`yes` before committing.
+
 ## Exit codes
 
 `0` ok · `1` error (envelope carries `error`) · `2` ran, answer is "no" (e.g. notes not overwritten

@@ -8,6 +8,7 @@ from pathlib import Path
 from .extract import hamming
 from .notes import WRITEBACK_BY, read_frontmatter
 from .rules import classify
+from .terms import key_terms
 
 NEAR_DUP = 0.80          # exact Jaccard of content tokens (words + figures, status/nav bars excluded)
 CONTAINED = 0.85         # |A∩B| / min(|A|,|B|): one screenshot's content sits inside the other (crop, viewer)
@@ -25,7 +26,7 @@ def load_items(con) -> dict[str, dict]:
         rec = json.loads(r["record"])
         rec["_note_path"], rec["_prev"] = r["note_path"], {
             "category": r["category"], "decided_by": r["decided_by"], "why": r["why"], "group": r["group_id"],
-            "rank": r["rank"], "size": r["group_size"]}
+            "rank": r["rank"], "size": r["group_size"], "terms": rec.get("terms", [])}
         items[r["id"]] = rec
     for r in con.execute("SELECT id, text FROM text_fts"):
         if r["id"] in items:
@@ -122,6 +123,10 @@ def organize(items: dict[str, dict], rules, content: Path) -> dict[str, dict]:
         out[iid] = {"category": cat, "decided_by": by, "why": why, "group": None, "rank": None,
                     "size": None, "score": sc, "score_why": sc_why}
 
+    terms = key_terms({i: r.get("_text", "") for i, r in items.items()})
+    for i in out:
+        out[i]["terms"] = terms.get(i, [])
+
     comps, _ = group(items)
     taken = set()
     for ids in sorted(comps.values(), key=lambda v: v[0]):
@@ -140,5 +145,5 @@ def organize(items: dict[str, dict], rules, content: Path) -> dict[str, dict]:
 
 def changed(rec: dict, org: dict) -> bool:
     p = rec["_prev"]
-    return (p["category"], p["decided_by"], p.get("why"), p["group"], p["rank"], p["size"]) != \
-        (org["category"], org["decided_by"], org["why"], org["group"], org["rank"], org["size"])
+    return (p["category"], p["decided_by"], p.get("why"), p["group"], p["rank"], p["size"], p.get("terms")) != \
+        (org["category"], org["decided_by"], org["why"], org["group"], org["rank"], org["size"], org.get("terms"))

@@ -972,3 +972,45 @@ def cmd_domains_suggest(a, state: State):
     rows = sorted(agg.values(), key=lambda e: (-len(e["held"]), -len(e["notes"]), e["domain"]))[:a.limit]
     return Result({"suggestions": [{"domain": e["domain"], "urls": e["urls"], "notes": len(e["notes"]),
                                     "held_images": len(e["held"]), "examples": e["examples"]} for e in rows]})
+
+
+# ---------------------------------------------------------------- panels (phase 7)
+from . import panels as pv  # noqa: E402
+
+
+@command("panel", "Render one read-only panvim panel (counts, reasons, names; never OCR text)",
+         args=[Arg("view", "home | class | concepts | groups | audit | quarantine | notes | path | image"),
+               Arg("id", "for path/image: an item id / prefix / note filename, or a group id", required=False),
+               Arg("--category", "notes view: only this category")],
+         details="What panvim runs on its timer. Reads the index only, never extraction or Laya. "
+                 "`panel path ID` prints a note's absolute path, `panel image ID` the image's current path.")
+def cmd_panel(a, state: State):
+    if not state.exists:
+        return Result({"_text": "SekerinShotto — not initialised\n\nRun: sekerinshotto ingest <folder> --content <vault folder> --commit\n"})
+    con = state.connect()
+    content = _content_root(state, None, required=False)
+    if a.view in ("path", "image"):
+        if not a.id:
+            raise ToolError(f"panel {a.view} needs an id")
+        if a.view == "path" and a.id.startswith("grp-"):
+            return Result({"_text": str(content / "groups" / f"{a.id}.md") + "\n"})
+        iid = resolve_id(con, a.id)
+        r = con.execute("SELECT note_path, record FROM items WHERE id=?", (iid,)).fetchone()
+        if a.view == "path":
+            return Result({"_text": str(content / r["note_path"]) + "\n"})
+        rec = json.loads(r["record"])
+        p = rec.get("stored_path") or rec.get("source_path")
+        if not p or not Path(p).exists():
+            raise ToolError(f"no image on disk for {iid[:15]} ({rec.get('source_state')})")
+        return Result({"_text": p + "\n"})
+    return Result({"_text": pv.render(a.view, con, content, state.root, a.category)})
+
+
+@command("panels install", "Create or refresh SekerinShotto's panvim panels and their key maps",
+         writes=True,
+         details="Plan: lists the 7 panels (ss visible; ss-class, ss-concepts, ss-groups, ss-audit, "
+                 "ss-quarantine, ss-notes hidden, reached from ss). Commit: runs `panvim new` for missing "
+                 "panels, (re)writes their keys.tsv and syntax.tsv, then runs `panvim audit`. Needs panvim and "
+                 "sekerinshotto on PATH.")
+def cmd_panels_install(a, state: State):
+    return Result(pv.install(a.commit))

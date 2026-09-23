@@ -571,3 +571,58 @@ def test_allow_releases_held_image(tmp_path):
     assert code == 0 and ok["data"]["released"] == {"quarantine": 1} and ok["data"]["held_total"] == 0
     note = next((content / "notes").rglob("*.md")).read_text()
     assert "[smallclub.my](https://smallclub.my)" in note and "allowlist" in note
+
+
+# ---------------------------------------------------------------- key terms + panels (phase 7)
+from sekerinshotto import panels as pv
+from sekerinshotto.terms import key_terms
+
+
+def test_key_terms_skip_stopwords_singletons_and_ubiquitous_words():
+    texts = {"a": "Hackathon cohort briefing please follow", "b": "cohort workshop hackathon",
+             "c": "sleep report deep sleep", "d": "sleep tracker cohort", "e": "follow follow unrelated",
+             "f": "workshop agenda", "g": "misc words", "h": "other words"}
+    kt = key_terms(texts)
+    assert "please" not in kt["a"] and "follow" not in kt["a"]
+    assert "hackathon" in kt["a"]
+    assert "cohort" not in kt["a"]                                   # in 3 of 8 notes (> 25%): too common
+    assert "report" not in kt["c"]                                   # appears in one note only
+    assert key_terms(texts) == kt                                    # deterministic
+
+
+def test_countdown_is_to_the_second():
+    assert pv.countdown(604800) == "7d 00h 00m 00s" and pv.countdown(3661) == "0d 01h 01m 01s"
+    assert pv.countdown(0) == "due now"
+
+
+@pytest.mark.parametrize("name", list(pv.SPECS))
+def test_no_key_commits_without_a_typed_word(name):
+    for line in pv.keys_for(name).splitlines():
+        if line.startswith(("#", "[")) or not line.strip():
+            continue
+        key, label, action, arg = (line.split("\t") + ["", "", ""])[:4]
+        if "--commit" in line:
+            assert key.isupper(), line                              # pan's convention: UPPERCASE = gated
+            assert '[ "$a" =' in arg and arg.index("read a") < arg.index("--commit"), line
+        elif key.isalpha() and key.isupper() and len(key) == 1:
+            raise AssertionError(f"uppercase key without a gated commit: {line}")
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Apple Vision")
+def test_panels_render_read_only_and_never_show_text(sample):
+    src, content, env = sample
+    _run("ingest", str(src), "--content", str(content), "--commit", env=env)
+    state = Path(env["SEKERINSHOTTO_STATE"])
+    before = sorted(p.name for p in (state / "journal").glob("*"))
+    for view in pv.VIEWS:
+        p = subprocess.run([sys.executable, "-m", "sekerinshotto.cli", "panel", view], capture_output=True,
+                           text=True, env=env)
+        assert p.returncode == 0 and p.stdout
+        assert "docs.example.com/form" not in p.stdout and "Register at" not in p.stdout   # no OCR text
+    assert sorted(p.name for p in (state / "journal").glob("*")) == before           # rendering wrote nothing
+    home = subprocess.run([sys.executable, "-m", "sekerinshotto.cli", "panel", "home"], capture_output=True,
+                          text=True, env=env).stdout
+    assert "1 notes" in home and "  present" in home
+    path = subprocess.run([sys.executable, "-m", "sekerinshotto.cli", "panel", "path",
+                           next((content / "notes").rglob("*.md")).stem], capture_output=True, text=True, env=env)
+    assert Path(path.stdout.strip()).exists()
