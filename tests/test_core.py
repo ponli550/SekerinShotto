@@ -134,6 +134,8 @@ def test_state_refuses_synced_folder():
 def _run(*args, env):
     p = subprocess.run([sys.executable, "-m", "sekerinshotto.cli", *args, "--json"],
                        capture_output=True, text=True, env=env)
+    if not p.stdout.strip():
+        raise AssertionError(f"no JSON from {' '.join(args)} (exit {p.returncode}); stderr:\n{p.stderr[-2000:]}")
     return p.returncode, json.loads(p.stdout)
 
 
