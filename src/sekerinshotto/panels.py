@@ -304,7 +304,7 @@ def keys_for(name: str) -> str:
     elif name in ("ss-audit", "ss-notes", "ss-results"):
         rows = [_note_open(),
                 "i\topen the image\tterm\topen \"$(sekerinshotto panel image {row})\"",
-                "v\tshow the item card (redacted)\tterm-side\tsekerinshotto show {row}" + VIEWER,
+                "v\tshow the item card (redacted)\tout-side\tsekerinshotto show {row}",
                 "R\tRETRY held images (plan, then confirm)\tterm-hold\t" + CONFIRM.format(cmd="retry", word="yes"),
                 "V\tCONFIRM this image: vouch for it (plan, then confirm)\tterm-hold\t"
                 + CONFIRM.format(cmd="confirm {row} --by user", word="yes"),
@@ -430,4 +430,5 @@ LIST_ENTER = "<CR>\tEnter: open as a results board (on top)\tterm\tsekerinshotto
 # Cards open in read-only nvim reading stdin: top-aligned, wrapped, `/` search, q closes. (less inside
 # panvim's terminal pane rendered bottom-aligned.)
 VIEWER = " --view"          # `show --view` opens the card in read-only nvim itself (clean sidePan label)
-CARD_ENTER = "<CR>\tEnter: the item card (redacted)\tterm-side\tsekerinshotto show {row}" + VIEWER
+# panvim's out-side shows a command's output in sidePan (read-only, top-aligned, q closes).
+CARD_ENTER = "<CR>\tEnter: the item card (redacted)\tout-side\tsekerinshotto show {row}"

@@ -981,3 +981,9 @@ def test_syntax_colours_are_ones_panvim_resolves():
             continue
         colour = line.split("\t")[1].split(",")[0]
         assert colour in pv.SYNTAX_COLOURS, line
+
+
+def test_cards_use_panvims_out_side():
+    for name in ("ss-audit", "ss-notes", "ss-results"):
+        cards = [l for l in pv.keys_for(name).splitlines() if "sekerinshotto show {row}" in l]
+        assert cards and all("\tout-side\t" in l for l in cards), cards
