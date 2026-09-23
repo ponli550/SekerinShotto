@@ -5,7 +5,7 @@ vault wrapper manages an Obsidian vault. Neither imports the other. They meet
 only at the files and the JSON described here. Any future ingester (PDF, web
 clip, …) that writes this format plugs into the same wrapper.
 
-Status: draft v0.8.0 — 2026-09-23.
+Status: draft v0.9.0 — 2026-09-23.
 
 ## 1. CLI contract (both tools)
 
@@ -48,11 +48,14 @@ Each SekerinShotto batch writes one file into the output root:
   "note_path": "screenshots/event/2026-09-23-example-com-event.md",
   "category": "event",
   "decided_by": "rule",
-  "confidence": 1.0,
-  "why": "matched event: date+time pattern",
-  "group": "grp-0042",
+  "why": "text 'Hackathon'; and '22 January'",
+  "group": "grp-3f96021a",
   "rank": 1,
-  "phash": "d1c3a5b7e9f0c2a4",
+  "group_size": 3,
+  "toks": [1234, 5678],
+  "sig": [9012, 3456],
+  "dhash": "d1c3a5b7e9f0c2a4",
+  "content_tokens": 118,
   "entities": {
     "qr":   [{"type": "url", "payload": "https://example.com/event"}],
     "urls": [{"raw": "https://example.com/event", "url": "https://example.com/event",
@@ -242,6 +245,41 @@ Audit log:
 - `AUDIT.md` at the root, regenerated each run from those files: counts per reason, then one row per image
   with a link to its note. It lives with the results, so reading the vault shows the failures.
 - `status --json` reports held count and `held/` size, so growth is visible without opening files.
+
+## 6a. Classification, duplicate groups, ranking
+
+Categories (built-in rules, first match wins): content first — `payment`, `event` (needs a keyword and a
+date), `form`, `learning`, `health`, `shopping` — then by app — `travel`, `game`, `chat`, `email`, `social`,
+`document`, `system`, `web` — else `uncategorized`. Every note records the rule's reason, e.g.
+`text 'Pendaftaran'; and '20 DECEMBER'`. English and Malay keywords.
+
+- Rules live in `rules_default.toml` inside the package; `<state>/rules.toml` replaces them.
+  `organize --commit` re-applies them without re-extracting.
+- `decided_by`: `rule` for the rules; a note whose `decided_by` is `llm`, `user` or `laya` keeps its
+  category, and its folder follows that category. Rules never override a caller.
+- Notes live at `notes/<category>/<date>-<app>-<id8>.md`. A category change moves the file (journal op
+  `move`); the filename never changes, so Obsidian `[[links]]` keep working. Emptied folders are removed.
+
+Duplicate groups ("the same one"):
+- Content tokens = words and figures from OCR lines, excluding the status bar (top 4.5 %) and gesture bar
+  (bottom 4 %), which would make every screenshot look alike.
+- Two screenshots are grouped if they share a QR payload, or their exact token Jaccard ≥ 0.80, or the
+  smaller one's tokens are ≥ 85 % contained in the other (a crop, or the same page in a viewer), or
+  Jaccard ≥ 0.50 with a near-identical content-area image hash (dHash distance ≤ 6). Groups are
+  transitive. MinHash LSH (32 bands × 2 rows) only picks candidate pairs; decisions use exact sets.
+- Figures count as content so same-template screens stay apart: on the sample, sleep reports from
+  different days scored ≤ 0.70 containment; true duplicates 0.80–0.97.
+- Group ids (`grp-<id8>`) persist: a group keeps its id when members join; merged groups keep the id most
+  members had. A dissolved group's hub note is deleted only if the user wrote nothing in it.
+- Rank 1 = most information: 3·QR + 2·linkable URLs + min(chars/300, 4) + 2·OCR confidence + resolution,
+  ties to the newer capture. Rank is informational here; cleanup uses it later.
+- Hub note `groups/<gid>.md` lists members in rank order as `[[note]]` links; each member note has a
+  `## Group` section linking back. Same ownership markers as image notes.
+
+Measured on the 182-screenshot sample: 6 uncategorized (3 %); 5 groups, 12 screenshots, all 5 correct on
+visual check (a re-screenshot in the gallery, a toast-only change, a certificate in a viewer vs a crop, a
+document page vs a crop of one section, one calendar shown four ways). Two fresh runs produce identical
+categories, group ids and files.
 
 ## 7. Laya — query layer, after everything
 

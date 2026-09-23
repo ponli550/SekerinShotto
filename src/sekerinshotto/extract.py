@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
-EXTRACTOR_VERSION = "2"
+EXTRACTOR_VERSION = "4"
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".heic", ".webp", ".tif", ".tiff", ".bmp", ".gif"}
 
 FAIL_MIN_CHARS = 3            # fewer chars and no barcode -> failed/no_text
@@ -203,6 +203,68 @@ def raw_host(raw: str) -> str:
     return re.split(r"[/?#]", r, maxsplit=1)[0].split(":")[0]
 
 
+# ---- content fingerprint for duplicate grouping ----
+CHROME_TOP, CHROME_BOTTOM = 0.045, 0.96      # status bar / gesture bar strips, as fractions of height
+SIG_SIZE = 64
+_MERSENNE = (1 << 61) - 1
+_PERMS = [((i * 0x9E3779B97F4A7C15 + 1) % _MERSENNE | 1, (i * 0xC2B2AE3D27D4EB4F + 7) % _MERSENNE)
+          for i in range(1, SIG_SIZE + 1)]
+_TOKEN = re.compile(r"[a-z][a-z0-9]{2,}")
+_NUMBER = re.compile(r"\b\d[\d.,:%/]*\d\b|\b\d\b")   # figures distinguish same-template screens (sleep reports)
+
+
+def content_tokens(lines) -> set[str]:
+    """Words from the content area only: the status bar (clock, battery) would make every
+    screenshot look alike, so lines in the top/bottom strips are dropped."""
+    out = set()
+    for line in lines:
+        box = line[2] if len(line) > 2 else None
+        if box and (box[1] < CHROME_TOP or box[1] > CHROME_BOTTOM):
+            continue
+        out.update(_TOKEN.findall(line[0].lower()))
+        out.update("#" + n for n in _NUMBER.findall(line[0]))
+    return out
+
+
+def token_hashes(tokens: set[str]) -> list[int]:
+    return sorted(int.from_bytes(hashlib.blake2b(t.encode(), digest_size=8).digest(), "big") for t in tokens)
+
+
+def minhash(hs: list[int]) -> list[int]:
+    """64-value MinHash of token hashes; used only to find candidate pairs quickly (LSH)."""
+    if not hs:
+        return []
+    return [min((a * h + b) % _MERSENNE for h in hs) for a, b in _PERMS]
+
+
+def jaccard_est(a: list[int], b: list[int]) -> float:
+    if not a or not b:
+        return 0.0
+    return sum(x == y for x, y in zip(a, b)) / len(a)
+
+
+def dhash_of(path: Path) -> str | None:
+    from PIL import Image
+    try:
+        with Image.open(path) as im:
+            w, h = im.size
+            im = im.crop((0, int(h * CHROME_TOP), w, int(h * CHROME_BOTTOM))).convert("L").resize((9, 8))
+            px = list(im.getdata())
+    except Exception:  # noqa: BLE001 - a fingerprint is optional
+        return None
+    bits = 0
+    for r in range(8):
+        for c in range(8):
+            bits = (bits << 1) | (px[r * 9 + c] > px[r * 9 + c + 1])
+    return f"{bits:016x}"
+
+
+def hamming(a: str | None, b: str | None) -> int:
+    if not a or not b:
+        return 64
+    return bin(int(a, 16) ^ int(b, 16)).count("1")
+
+
 # ---- the extraction record ----
 @dataclass
 class Extraction:
@@ -219,6 +281,11 @@ class Extraction:
     status: str = "ok"
     status_reason: str | None = None
     ocr_confidence: float | None = None
+    sig: list[int] = field(default_factory=list)      # MinHash of content tokens (status/nav bars excluded)
+    toks: list[int] = field(default_factory=list)     # exact token hashes, for exact similarity on candidates
+    content_tokens: int = 0
+    dhash: str | None = None                          # 64-bit difference hash of the content region
+    extractor_version: str = EXTRACTOR_VERSION        # kept from the record when a note is re-rendered
     elapsed_ms: int = 0
 
     @property
@@ -339,6 +406,9 @@ def _extract(path: Path, file_id: str | None = None) -> Extraction:
         if u["url"] in qr_urls:
             continue
         ex.urls.append({**u, "verified_by": "none"})
+
+    ex.toks = token_hashes(content_tokens(ex.lines))
+    ex.content_tokens, ex.sig, ex.dhash = len(ex.toks), minhash(ex.toks), dhash_of(path)
 
     chars = sum(len(t[0]) for t in ex.lines)
     if chars:

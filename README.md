@@ -19,6 +19,7 @@ uv run sekerinshotto schema --json                      # the full contract
 uv run sekerinshotto domains update --commit            # once: reference lists for URL correction
 uv run sekerinshotto ingest ~/Screenshots --json        # plan: what would be extracted
 uv run sekerinshotto ingest ~/Screenshots --commit      # extract and write notes
+uv run sekerinshotto organize --commit                  # re-apply rules/groups after editing rules.toml
 uv run sekerinshotto status
 uv run sekerinshotto reindex --commit                   # rebuild the index from manifests + notes
 ```
@@ -26,6 +27,11 @@ uv run sekerinshotto reindex --commit                   # rebuild the index from
 OCR misreads such as `docs.qoogle.com` or `Inkd.in` are corrected to the real domain when the evidence
 points to exactly one candidate; the raw reading is always kept beside it. `domains update` is the only
 command that touches the network, and it downloads reference lists, never a captured URL.
+
+Notes are sorted into `notes/<category>/` by explainable rules (English and Malay keywords, then the app),
+and screenshots with the same content — a crop, a re-screenshot, the same page in a viewer — are grouped
+with a hub note in `groups/`, ranked so rank 1 is the most complete copy. Edit `<state>/rules.toml` to change
+the rules; categories set by an LLM or by you are never overridden.
 
 State (index, manifests, signed journal) lives in `~/.local/share/sekerinshotto/`, outside any vault and
 never in a synced folder. Rerunning `ingest` skips images already extracted with the current extractor.

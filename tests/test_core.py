@@ -280,3 +280,115 @@ def test_join_refuses_words_dates_and_far_lines():
 
 def test_ellipsis_marks_truncated():
     assert find_urls_in_lines(_lines("https://register.gotow…"))[0]["truncated"] is True
+
+
+# ---------------------------------------------------------------- organize (phase 3)
+from sekerinshotto.extract import content_tokens, token_hashes, minhash
+from sekerinshotto.organize import group, organize as run_organize, score
+from sekerinshotto.rules import _compile, classify, load as load_rules
+
+
+def _rules():
+    return load_rules(Path("/nonexistent"))[0]
+
+
+@pytest.mark.parametrize("app,qr,domains,text,cat", [
+    ("com.whatsapp.w4b", set(), [], "Hackathon registration closes 22 January 2026", "event"),
+    ("com.whatsapp.w4b", set(), [], "okay faham nanti tanya", "chat"),
+    ("com.instagram.android", {"payment"}, [], "scan to pay", "payment"),
+    ("com.hihonor.android.launcher", set(), [], "TNG eWallet Cash In Successful", "payment"),
+    ("com.google.android.gm", set(), ["forms.gle"], "please fill in", "form"),
+    ("com.google.android.gm", set(), [], "Pendaftaran dibuka sehingga 20 DECEMBER", "event"),
+    ("com.linkedin.android", set(), [], "a post about hiring", "social"),
+    ("com.unknown.app", set(), [], "nothing useful", "uncategorized"),
+])
+def test_default_rules(app, qr, domains, text, cat):
+    assert classify(_rules(), app, qr, domains, text)[0] == cat
+
+
+def test_event_needs_a_date():
+    assert classify(_rules(), "com.unknown", set(), [], "Join our workshop soon")[0] == "uncategorized"
+
+
+def test_bad_user_rules_are_errors():
+    with pytest.raises(ToolError, match="invalid category"):
+        _compile({"rule": [{"category": "Bad Name"}]}, "x")
+    with pytest.raises(ToolError, match="bad regex"):
+        _compile({"rule": [{"category": "ok", "text": ["("]}]}, "x")
+
+
+def _rec(iid, words, app="com.x", qr=(), captured="2026-01-01T00:00:00", chars=None, w=1200, h=2640):
+    toks = token_hashes(set(words))
+    return {"id": iid, "source_app": app, "captured_at": captured, "width": w, "height": h,
+            "entities": {"qr": [{"payload": p, "type": "url"} for p in qr], "urls": [], "domains": []},
+            "text_chars": chars if chars is not None else 20 * len(words), "ocr_confidence": 1.0,
+            "toks": toks, "sig": minhash(toks), "dhash": None, "content_tokens": len(toks),
+            "_note_path": None, "_prev": {"category": None, "decided_by": None, "why": None, "group": None,
+                                          "rank": None, "size": None}, "_text": " ".join(words)}
+
+
+_DOC = [f"word{i}" for i in range(40)]
+
+
+def test_crop_is_grouped_with_its_full_version_and_ranks_second():
+    items = {"sha256:aa": _rec("sha256:aa", _DOC + ["fit", "screen", "signature"]),       # viewer
+             "sha256:bb": _rec("sha256:bb", _DOC[:30], chars=300)}                       # crop
+    comps, _ = group(items)
+    assert list(comps.values()) == [["sha256:aa", "sha256:bb"]]
+    org = run_organize(items, _rules(), Path("/nonexistent"))
+    assert org["sha256:aa"]["rank"] == 1 and org["sha256:bb"]["rank"] == 2
+
+
+def test_same_template_different_figures_is_not_grouped():
+    base = ["sleep", "deep", "light", "rem", "reference", "low", "high", "normal", "time", "bed", "awake", "woke"]
+    day1 = content_tokens([(" ".join(base) + " 16% 58% 26% 5h41 20:53 05:29", 1.0, None)])
+    day2 = content_tokens([(" ".join(base) + " 15% 62% 23% 8h36 22:10 06:30", 1.0, None)])
+    items = {"sha256:aa": _rec("sha256:aa", sorted(day1)), "sha256:bb": _rec("sha256:bb", sorted(day2))}
+    assert group(items)[0] == {}
+
+
+def test_same_qr_payload_groups_even_with_different_text():
+    items = {"sha256:aa": _rec("sha256:aa", ["alpha"] * 1, qr=["https://q.example.com/x"]),
+             "sha256:bb": _rec("sha256:bb", ["beta"], qr=["https://q.example.com/x"])}
+    assert list(group(items)[0].values()) == [["sha256:aa", "sha256:bb"]]
+
+
+def test_status_bar_lines_do_not_count():
+    lines = [("11:58 43% battery", 1.0, (0.0, 0.01, 1, 0.02)), ("real content here", 1.0, (0.0, 0.5, 1, 0.02))]
+    assert content_tokens(lines) == {"real", "content", "here"}
+
+
+def test_group_id_is_kept_when_a_member_joins():
+    items = {"sha256:aa": _rec("sha256:aa", _DOC), "sha256:bb": _rec("sha256:bb", _DOC)}
+    for i in items.values():
+        i["_prev"]["group"] = "grp-keepme00"
+    items["sha256:00"] = _rec("sha256:00", _DOC)                   # sorts first, but is new
+    org = run_organize(items, _rules(), Path("/nonexistent"))
+    assert {o["group"] for o in org.values()} == {"grp-keepme00"}
+
+
+def test_score_prefers_qr_and_text():
+    a, b = _rec("sha256:aa", _DOC, qr=["x"]), _rec("sha256:bb", _DOC)
+    assert score(a)[0] > score(b)[0]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Apple Vision")
+def test_organize_moves_note_and_keeps_llm_decision(sample, tmp_path):
+    src, content, env = sample
+    _run("ingest", str(src), "--content", str(content), "--commit", env=env)
+    note = next(content.rglob("*.md"))
+    assert note.parent.name == "web"                               # chrome screenshot -> web
+    note.write_text(note.read_text() + "keep this line\n")
+    rules = Path(env["SEKERINSHOTTO_STATE"]) / "rules.toml"
+    rules.write_text('[[rule]]\ncategory = "browsing"\napps = ["com.android.chrome"]\n')
+    code, res = _run("organize", "--commit", env=env)
+    moved = content / "notes" / "browsing" / note.name
+    assert code == 0 and moved.exists() and not note.exists() and not note.parent.exists()
+    assert "keep this line" in moved.read_text()
+    moved.write_text(moved.read_text().replace('decided_by: "rule"', 'decided_by: "llm"')
+                     .replace('category: "browsing"', 'category: "reading"'))
+    rules.unlink()
+    _run("organize", "--commit", env=env)
+    final = content / "notes" / "reading" / note.name              # the llm's category decides the folder
+    assert 'category: "reading"' in final.read_text() and "keep this line" in final.read_text()
+    assert _run("organize", env=env)[1]["data"]["notes_to_write"] == 0
