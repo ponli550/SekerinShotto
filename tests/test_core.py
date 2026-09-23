@@ -1071,3 +1071,21 @@ def test_watch_job_is_opt_in_and_needs_a_folder(tmp_path, monkeypatch):
     pl = cm._plist("watch", _State(tmp_path / "st"), folder="/Users/me/Downloads")
     assert pl["WatchPaths"] == ["/Users/me/Downloads"] and pl["ProgramArguments"][1:3] == ["autoadd", "/Users/me/Downloads"]
     assert cm.JOBS["watch"].get("opt_in") is True
+
+
+def test_quick_fix_keys_exist_and_are_gated():
+    audit = pv.keys_for("ss-audit")
+    concepts = pv.keys_for("ss-concepts")
+    assert "domains allow-item {row}" in audit and "terms hide {row}" in concepts
+
+
+def test_terms_hide_and_unhide(tmp_path):
+    import os
+    env = {**os.environ, "SEKERINSHOTTO_STATE": str(tmp_path / "st"), "SEKERINSHOTTO_CONTENT": str(tmp_path / "v")}
+    _run("ingest", str(tmp_path), "--commit", env=env)                      # empty ingest binds the vault
+    code, bad = _run("terms", "hide", "two words", "--commit", env=env)
+    assert code == 1
+    assert _run("terms", "hide", "Afif", "--commit", env=env)[1]["data"]["changed"] is True
+    assert _run("terms", "list", env=env)[1]["data"]["hidden"] == ["afif"]
+    assert _run("terms", "unhide", "afif", "--commit", env=env)[1]["data"]["changed"] is True
+    assert _run("terms", "list", env=env)[1]["data"]["hidden"] == []
