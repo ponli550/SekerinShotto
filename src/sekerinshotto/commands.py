@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import statistics
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -71,7 +72,8 @@ def cmd_schema(a, state):
          args=[Arg("src", "an image file or a folder (searched recursively)"),
                Arg("--content", "content root the notes are written under (bound to the state on first use)"),
                Arg("--limit", "process at most N images", type=int),
-               Arg("--workers", "parallel extraction threads", type=int, default=4)],
+               Arg("--workers", "parallel extraction threads", type=int, default=4),
+               Arg("--cleanup", "after committing, run cleanup too (moves the original images)", flag=True)],
          writes=True,
          details="Plan: hashes every image and reports which are new or need re-extraction. "
                  "Commit: extracts them and writes notes, manifest and journal. Images already "
@@ -92,7 +94,11 @@ def cmd_ingest(a, state: State):
             dup_in_batch += 1
             continue
         seen.add(fid)
-        row = con.execute("SELECT extractor_version, note_path FROM items WHERE id=?", (fid,)).fetchone()
+        row = con.execute("SELECT extractor_version, note_path, source_state FROM items WHERE id=?",
+                          (fid,)).fetchone()
+        if row and row["source_state"] != "present":
+            skipped += 1                      # already routed by cleanup (held/quarantined/attached/purged)
+            continue
         if row and row["extractor_version"] == EXTRACTOR_VERSION and row["note_path"] \
                 and (content / row["note_path"]).exists():
             skipped += 1
@@ -142,7 +148,14 @@ def cmd_ingest(a, state: State):
                        "per_image_median_ms": int(statistics.median(times)) if times else 0,
                        "per_image_max_ms": max(times) if times else 0}}
     data.pop("items")
-    return Result(data, violation=bool(conflicts))
+    if a.cleanup:
+        with state.lock():
+            data["cleanup"] = run_cleanup(state, con, content, True)
+        conflicts = conflicts + data["cleanup"]["conflicts"]
+    else:
+        with state.lock():
+            _write_audit(state, con, content)
+    return Result(data, violation=bool(conflicts) or bool(a.cleanup and data["cleanup"]["held_total"]))
 
 
 def _count(it) -> dict:
@@ -158,20 +171,26 @@ def _index(con, rec: dict, text: str, ingested: str) -> None:
     con.execute("""INSERT INTO items (id, source_path, source_app, captured_at, width, height, bytes,
                    extractor_version, source_state, status, status_reason, ocr_confidence, text_chars,
                    note_path, batch_id, ingested_at, record, category, decided_by, why, group_id, rank,
-                   group_size) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   group_size, stored_path, purge_after, hold_reason, attempts, keep, confirmed_by)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(id) DO UPDATE SET source_path=excluded.source_path,
                    extractor_version=excluded.extractor_version, status=excluded.status,
                    status_reason=excluded.status_reason, ocr_confidence=excluded.ocr_confidence,
                    text_chars=excluded.text_chars, note_path=excluded.note_path,
                    batch_id=excluded.batch_id, ingested_at=excluded.ingested_at, record=excluded.record,
                    category=excluded.category, decided_by=excluded.decided_by, why=excluded.why,
-                   group_id=excluded.group_id, rank=excluded.rank, group_size=excluded.group_size""",
+                   group_id=excluded.group_id, rank=excluded.rank, group_size=excluded.group_size,
+                   source_state=excluded.source_state, stored_path=excluded.stored_path,
+                   purge_after=excluded.purge_after, hold_reason=excluded.hold_reason,
+                   attempts=excluded.attempts, keep=excluded.keep, confirmed_by=excluded.confirmed_by""",
                 (rec["id"], rec["source_path"], rec["source_app"], rec["captured_at"], rec["width"],
                  rec["height"], rec["bytes"], rec.get("extractor_version", EXTRACTOR_VERSION),
                  rec["source_state"], rec["status"], rec["status_reason"], rec["ocr_confidence"],
                  rec["text_chars"], rec["note_path"], rec["batch_id"], ingested,
                  json.dumps(rec, ensure_ascii=False), rec.get("category"), rec.get("decided_by"), rec.get("why"),
-                 rec.get("group"), rec.get("rank"), rec.get("group_size")))
+                 rec.get("group"), rec.get("rank"), rec.get("group_size"), rec.get("stored_path"),
+                 rec.get("purge_after"), rec.get("hold_reason"), rec.get("attempts") or 0,
+                 1 if rec.get("keep") else 0, rec.get("confirmed_by")))
     ents = rec["entities"]
     for u in ents["urls"]:
         sub = u.get("flag") or ("corrected" if u.get("corrected") else None)
@@ -212,6 +231,9 @@ def cmd_status(a, state: State):
         "groups": con.execute("SELECT COUNT(DISTINCT group_id) FROM items WHERE group_id IS NOT NULL").fetchone()[0],
         "urls_corrected_or_flagged": q("SELECT subtype, COUNT(*) FROM entities WHERE kind='url' AND subtype IS NOT NULL GROUP BY subtype"),
         "domain_list": DomainIndex(state.dir("domains")).info or None,
+        "held_bytes": sum(p.stat().st_size for p in state.dir("held").glob("*") if p.is_file()),
+        "quarantine_bytes": sum(p.stat().st_size for p in state.dir("quarantine").rglob("*") if p.is_file()),
+        "next_purge": con.execute("SELECT MIN(purge_after) FROM items WHERE source_state='quarantined'").fetchone()[0],
     })
 
 
@@ -312,7 +334,7 @@ def apply_organization(state: State, con, content: Path, journal, manifest: Path
             else:
                 journal.append(op="update" if existing is not None else "create", id=i, path=str(new_path),
                                batch_id=batch_id)
-            new_rec = manifest_record(ex, batch_id, new_rel, rec.get("source_state", "present"), o)
+            new_rec = manifest_record(ex, batch_id, new_rel, None, o)
             if mf:
                 mf.write(json.dumps(new_rec, ensure_ascii=False) + "\n")
             _index(con, new_rec, text, ingested)
@@ -370,3 +392,274 @@ def cmd_organize(a, state: State):
     conflicts = report.pop("conflicts")
     return Result({"committed": True, "batch_id": batch_id, **report, "conflicts": conflicts},
                   violation=bool(conflicts))
+
+
+# ---------------------------------------------------------------- cleanup (phase 4)
+from . import cleanup as lc  # noqa: E402
+
+
+def _records(con, where: str = "1=1", params=()) -> list[dict]:
+    out = []
+    for r in con.execute(f"SELECT record, note_path FROM items WHERE record IS NOT NULL AND {where}", params):
+        rec = json.loads(r["record"])
+        rec["note_path"] = r["note_path"]
+        out.append(rec)
+    return out
+
+
+def _text(con, iid: str) -> str:
+    row = con.execute("SELECT text FROM text_fts WHERE id=?", (iid,)).fetchone()
+    return row[0] if row else ""
+
+
+def _save(con, rec: dict, **changes) -> dict:
+    rec = {**rec, **changes}
+    _index(con, rec, _text(con, rec["id"]), now_iso())
+    return rec
+
+
+def resolve_id(con, token: str) -> str:
+    """Full id from a full id, a >= 8-hex prefix, or a note filename stem. Never guesses."""
+    t = token.strip()
+    if t.endswith(".md"):
+        t = t[:-3]
+    rows = con.execute("SELECT id FROM items WHERE id=? OR substr(id, 8) LIKE ? OR note_path LIKE ?",
+                       (t, (t.split(":")[-1] + "%") if len(t.split(":")[-1]) >= 8 else "\x00", f"%/{t}.md")).fetchall()
+    ids = sorted({r[0] for r in rows})
+    if len(ids) == 1:
+        return ids[0]
+    if not ids:
+        raise ToolError(f"no item matches {token!r}; pass a full id, an id prefix of at least 8 hex chars, "
+                        "or a note filename")
+    raise ToolError(f"{token!r} is ambiguous: {', '.join(i[:15] for i in ids[:5])}")
+
+
+def _write_audit(state: State, con, content: Path) -> None:
+    content.mkdir(parents=True, exist_ok=True)
+    (content / "AUDIT.md").write_text(lc.render_audit(_records(con), now_iso()) + "\n")
+
+
+def _rerender(state: State, con, content: Path, journal, batch_id: str, ids: set[str]) -> dict:
+    if not ids:
+        return {"notes_written": 0, "conflicts": []}
+    return apply_organization(state, con, content, journal, state.dir("batches") / f"{batch_id}.jsonl",
+                              batch_id, now_iso(), force=ids)
+
+
+def run_cleanup(state: State, con, content: Path, commit: bool, batch_id: str | None = None,
+                only: set[str] | None = None) -> dict:
+    plan, moved, errors = [], [], []
+    for rec in _records(con, "source_state IN ('present', 'held')"):
+        if only is not None and rec["id"] not in only:
+            continue                                   # confirm/keep touch their target, nothing else
+        outcome, reason = lc.decide(rec)
+        if rec["source_state"] == "held" and outcome == "hold":
+            continue                                   # stays held; nothing to do
+        plan.append({"id": rec["id"], "note": rec.get("note_path"), "outcome": outcome, "reason": reason})
+    counts = _count(p["outcome"] for p in plan)
+    if not commit:
+        return {"committed": False, "plan": counts, "items": plan[:200],
+                "already_held": con.execute("SELECT COUNT(*) FROM items WHERE source_state='held'").fetchone()[0]}
+    batch_id = batch_id or now_iso().replace(":", "-") + "-cleanup"
+    journal = state.journal(batch_id)
+    audit = open(state.dir("audit") / f"{batch_id}.jsonl", "a")
+    try:
+        for p in plan:
+            rec = json.loads(con.execute("SELECT record FROM items WHERE id=?", (p["id"],)).fetchone()[0])
+            src = lc.current_file(rec)
+            try:
+                fields = lc.route(rec, p["outcome"], p["reason"], state.root, content, batch_id)
+            except ToolError as e:
+                errors.append({"id": p["id"], "error": str(e)})
+                continue
+            journal.append(op=p["outcome"], id=p["id"], path=fields["stored_path"], from_path=str(src),
+                           batch_id=batch_id)
+            _save(con, rec, **fields)
+            moved.append(p["id"])
+            if p["outcome"] != "quarantine" or any(b["type"] == "wifi" for b in rec["entities"]["qr"]):
+                audit.write(json.dumps({"id": p["id"], "source_path": rec["source_path"], "outcome": p["outcome"],
+                                        "reason": p["reason"], "ocr_confidence": rec.get("ocr_confidence"),
+                                        "text_chars": rec.get("text_chars"), "qr_detected": len(rec["entities"]["qr"]),
+                                        "attempts": rec.get("attempts") or 0, "at": now_iso(),
+                                        "note_path": rec.get("note_path")}, ensure_ascii=False) + "\n")
+        con.commit()
+        rer = _rerender(state, con, content, journal, batch_id, set(moved))
+        con.commit()
+    finally:
+        audit.close()
+    _write_audit(state, con, content)
+    held = con.execute("SELECT COUNT(*) FROM items WHERE source_state='held'").fetchone()[0]
+    return {"committed": True, "batch_id": batch_id, "moved": _count(p["outcome"] for p in plan if p["id"] in moved),
+            "held_total": held, "errors": errors, "notes_rewritten": rer["notes_written"],
+            "conflicts": rer["conflicts"]}
+
+
+@command("cleanup", "Route extracted images: quarantine, keep as attachment, or hold",
+         writes=True,
+         details="Read well -> <state>/quarantine/, purged exactly 7 days later (604800 s). Visual (photos, "
+                 "video frames; little text, rich pixels, no QR) -> <content>/attachments/, embedded in the "
+                 "note, kept forever. Failed, or with an unverified OCR URL -> <state>/held/, retried, never "
+                 "auto-deleted. Moves the original image files. Writes AUDIT.md. Exit 2 when images are "
+                 "held back: a valid answer, not a failure.")
+def cmd_cleanup(a, state: State):
+    content = _content_root(state, None, required=True)
+    con = state.connect()
+    if not a.commit:
+        return Result(run_cleanup(state, con, content, False))
+    with state.lock():
+        res = run_cleanup(state, con, content, True)
+    return Result(res, violation=res["held_total"] > 0)
+
+
+@command("purge", "Delete quarantined images whose 7 days are up",
+         writes=True,
+         details="Plan: every quarantined image with its purge time and seconds remaining. Commit: deletes "
+                 "only images with now >= purge_after, and only files that resolve inside "
+                 "<state>/quarantine/. The note stays and records the purge; it is then the only record.")
+def cmd_purge(a, state: State):
+    content = _content_root(state, None, required=True)
+    con = state.connect()
+    now = now_iso()
+    recs = _records(con, "source_state='quarantined'")
+    due = [r for r in recs if lc.is_due(r, now)]
+    waiting = sorted(({"id": r["id"], "purge_after": r["purge_after"], "seconds_left": lc.seconds_left(r, now)}
+                      for r in recs if not lc.is_due(r, now)), key=lambda x: x["seconds_left"])
+    if not a.commit:
+        return Result({"committed": False, "now": now, "due": len(due), "waiting": len(waiting),
+                       "next": waiting[:10], "due_items": [{"id": r["id"], "purge_after": r["purge_after"]}
+                                                           for r in due[:50]]})
+    batch_id = now.replace(":", "-") + "-purge"
+    purged, refused = [], []
+    with state.lock():
+        journal = state.journal(batch_id)
+        for r in due:
+            if r.get("stored_path") and lc.purge_file(Path(r["stored_path"]), state.root):
+                journal.append(op="delete", id=r["id"], path=r["stored_path"], batch_id=batch_id)
+                _save(con, r, source_state="purged", purged_at=now, stored_path=None)
+                purged.append(r["id"])
+            else:
+                refused.append({"id": r["id"], "path": r.get("stored_path"),
+                                "reason": "not a file inside the quarantine folder; left untouched"})
+        con.commit()
+        rer = _rerender(state, con, content, journal, batch_id, set(purged))
+        con.commit()
+    _write_audit(state, con, content)
+    return Result({"committed": True, "now": now, "purged": len(purged), "refused": refused,
+                   "waiting": len(waiting), "notes_rewritten": rer["notes_written"]}, violation=bool(refused))
+
+
+@command("restore", "Move quarantined images back to where they came from",
+         args=[Arg("target", "an item id / id prefix / note filename, or a quarantine batch id")],
+         writes=True,
+         details="Only quarantined images can be restored; after purge there is nothing to restore. "
+                 "An image whose original path is occupied again is skipped, never overwritten.")
+def cmd_restore(a, state: State):
+    content = _content_root(state, None, required=True)
+    con = state.connect()
+    batch = [r for r in _records(con, "source_state='quarantined'")
+             if r.get("stored_path") and Path(r["stored_path"]).parent.name == a.target]
+    recs = batch or [json.loads(con.execute("SELECT record FROM items WHERE id=?",
+                                            (resolve_id(con, a.target),)).fetchone()[0])]
+    recs = [r for r in recs if r.get("source_state") == "quarantined"]
+    if not recs:
+        raise ToolError(f"{a.target!r} has nothing in quarantine (purged images cannot be restored)")
+    if not a.commit:
+        return Result({"committed": False, "would_restore": [{"id": r["id"], "to": r["source_path"],
+                                                              "occupied": Path(r["source_path"]).exists()} for r in recs]})
+    batch_id = now_iso().replace(":", "-") + "-restore"
+    done, skipped = [], []
+    with state.lock():
+        journal = state.journal(batch_id)
+        for r in recs:
+            dst = Path(r["source_path"])
+            if dst.exists():
+                skipped.append({"id": r["id"], "reason": f"{dst} exists"})
+                continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(r["stored_path"], dst)
+            journal.append(op="restore", id=r["id"], path=str(dst), from_path=r["stored_path"], batch_id=batch_id)
+            _save(con, r, source_state="present", stored_path=None, quarantined_at=None, purge_after=None)
+            done.append(r["id"])
+        con.commit()
+        _rerender(state, con, content, journal, batch_id, set(done))
+        con.commit()
+    _write_audit(state, con, content)
+    return Result({"committed": True, "restored": len(done), "skipped": skipped}, violation=bool(skipped))
+
+
+@command("retry", "Re-extract held images; those that now pass leave the held folder",
+         writes=True,
+         details="Runs extraction again on every image in <state>/held/ with the current extractor, "
+                 "domain list and rules, then routes it like cleanup does. attempts counts the tries.")
+def cmd_retry(a, state: State):
+    content = _content_root(state, None, required=True)
+    con = state.connect()
+    held = _records(con, "source_state='held'")
+    if not a.commit:
+        return Result({"committed": False, "held": len(held),
+                       "items": [{"id": r["id"], "reason": r.get("hold_reason"), "attempts": r.get("attempts") or 0}
+                                 for r in held[:100]]})
+    batch_id = now_iso().replace(":", "-") + "-retry"
+    with state.lock():
+        dom = DomainIndex(state.dir("domains"))
+        qr_known = qr_domains_of([r[0] for r in con.execute(
+            "SELECT value FROM entities WHERE kind='url' AND verified_by='qr'")], dom)
+        for r in held:
+            path = Path(r["stored_path"]) if r.get("stored_path") else None
+            if not path or not path.exists():
+                continue
+            ex = extract(path, r["id"])
+            fix_urls(ex, dom, qr_known)
+            ex.path = Path(r["source_path"])                 # the note keeps naming the original file
+            for k in ("stored_path", "keep", "confirmed_by", "hold_reason"):
+                setattr(ex, k, r.get(k))
+            ex.source_state, ex.attempts = "held", (r.get("attempts") or 0) + 1
+            rec = manifest_record(ex, batch_id, r.get("note_path"), None,
+                                  {"category": r.get("category") or "uncategorized", "decided_by": r.get("decided_by"),
+                                   "why": r.get("why"), "group": r.get("group"), "rank": r.get("rank"),
+                                   "size": r.get("group_size")})
+            _index(con, rec, ex.text, now_iso())
+        con.commit()
+        res = run_cleanup(state, con, content, True, batch_id)
+    return Result({"retried": len(held), **res}, violation=res["held_total"] > 0)
+
+
+def _flag(state: State, a, **changes) -> Result:
+    content = _content_root(state, None, required=True)
+    con = state.connect()
+    iid = resolve_id(con, a.id)
+    rec = json.loads(con.execute("SELECT record FROM items WHERE id=?", (iid,)).fetchone()[0])
+    if rec["source_state"] not in ("present", "held"):
+        hint = " Run `restore` first." if rec["source_state"] == "quarantined" else ""
+        raise ToolError(f"{iid[:15]} is {rec['source_state']}; only present or held images can be changed.{hint}")
+    after = lc.decide({**rec, **changes})
+    if not a.commit:
+        return Result({"committed": False, "id": iid, "state": rec["source_state"], "set": changes,
+                       "cleanup_would": after[0]})
+    with state.lock():
+        _save(con, rec, **changes)
+        con.commit()
+        res = run_cleanup(state, con, content, True, only={iid})
+    return Result({"committed": True, "id": iid, "set": changes, "cleanup": res})
+
+
+@command("confirm", "Release a held image: the caller vouches for its extraction",
+         args=[Arg("id", "item id, id prefix (>= 8 hex) or note filename"),
+               Arg("--by", "who confirms: llm or user", default="llm")],
+         writes=True,
+         details="Sets confirmed_by, which lifts a hold for failed extraction or unverified URLs, then runs "
+                 "cleanup so the image moves on (usually to quarantine).")
+def cmd_confirm(a, state: State):
+    if a.by not in ("llm", "user"):
+        raise ToolError("--by must be 'llm' or 'user'")
+    return _flag(state, a, confirmed_by=a.by)
+
+
+@command("keep", "Keep an image forever as a vault attachment (e.g. a diagram OCR cannot capture)",
+         args=[Arg("id", "item id, id prefix (>= 8 hex) or note filename")],
+         writes=True,
+         details="The visual detector finds photos and video frames, not text-heavy diagrams. keep moves "
+                 "the image to <content>/attachments/ and embeds it in its note. Quarantined images can "
+                 "be kept only after restore.")
+def cmd_keep(a, state: State):
+    return _flag(state, a, keep=True)

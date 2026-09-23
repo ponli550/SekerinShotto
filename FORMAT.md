@@ -5,7 +5,7 @@ vault wrapper manages an Obsidian vault. Neither imports the other. They meet
 only at the files and the JSON described here. Any future ingester (PDF, web
 clip, …) that writes this format plugs into the same wrapper.
 
-Status: draft v0.9.0 — 2026-09-23.
+Status: draft v0.10.0 — 2026-09-23.
 
 ## 1. CLI contract (both tools)
 
@@ -181,7 +181,7 @@ can see it; working state and bulky images stay out of the vault.
 <state>/                     working state — never in a vault, never synced
   inbox/                     default drop folder (any folder can also be passed in)
   held/                      images that failed to read, kept (no clock), retried automatically
-  quarantine/<batch_id>/     extracted images, purged 7 days after quarantined_at
+  quarantine/<batch_id>/     extracted images, purged exactly 604800 s after quarantined_at
   index.sqlite               hashes, text (FTS), entities, state, tombstones
   binding.json               which content root this state writes to
   domains/                   Tranco ranks (SQLite), Public Suffix List, IANA TLDs, info.json (list id)
@@ -218,33 +218,46 @@ Database — `<state>/index.sqlite`:
 - Must not live in a sync-managed folder (iCloud, Dropbox, Obsidian Sync): sync copies `index.sqlite`,
   `-wal` and `-shm` separately and corrupts it. The default `<state>` location already avoids this.
 
-## 6. Failed and visual images — no manual review
+## 6. Image lifecycle — no manual review (implemented)
 
 The user does not review images. They read results: the notes, and `AUDIT.md` for failures.
-So nothing waits on a human, and every non-standard outcome is logged.
+Nothing waits on a human, and every non-standard outcome is logged. `cleanup` moves the original files.
 
-Outcomes after extraction:
-
-| Outcome | Detected by | Image goes to | Clock |
+| Outcome | Rule | Image goes to | Clock |
 |---|---|---|---|
-| Read well | confidence ≥ threshold | `quarantine/`, then purged | 7 days |
-| Visual (diagram, slide, chart) | low text-to-area ratio, scattered text boxes, many lines/shapes | `attachments/`, embedded in its note | none, kept forever |
-| Failed to read | confidence < threshold, QR detected but undecodable, no text | `held/` | none |
+| Read well | none of the below | `<state>/quarantine/<batch>/`, then purged | exactly 604800 s after `quarantined_at` |
+| Visual | text covers < 8 % of the content area, < 300 chars, ≥ 180 gray levels, edge share ≥ 0.03, no decoded QR, category not `system` | `<content>/attachments/`, embedded at the top of its note | none, kept forever |
+| Held | extraction failed, or an OCR URL is still `verified_by: none` without a cut-off flag | `<state>/held/` | none |
+| Kept | `keep <id> --commit` (a diagram the visual rule misses) | `<content>/attachments/` | none |
 
-Failed images:
-- Still get a note, with whatever was extracted and `status: failed` in frontmatter, so they show up in results.
-- Are retried automatically on every run where the extractor version or settings changed, and on `retry --commit`.
-  A retry that passes moves them onto the normal path.
-- Are never deleted automatically: they are exactly the images with no good copy of their content.
-- May be released by the calling LLM with `confirm <id> --commit` (`verified_by: llm`), the only non-automatic exit.
+- Visual rule measured on the sample: catches photos, video frames, camera feeds (14 of 182). It does NOT
+  catch text-heavy diagrams or slides; those are quarantined unless `keep` is used.
+- Held images keep their note (`source_state: held`, tag `sekerinshotto/held`), are re-extracted by `retry`
+  (counted in `attempts`), are never deleted automatically, and leave `held/` when they pass or when the
+  caller runs `confirm <id> --by llm|user --commit`. `confirm` and `keep` move only their target.
+- `purge --commit` deletes only images with `now >= purge_after`, and only files whose resolved path is
+  inside `<state>/quarantine/` (symlinks and `..` refused). The note then says it is the only record.
+- `restore <id|batch> --commit` moves quarantined images back to their original path, never over an
+  existing file. Purged images cannot be restored.
+- An image routed by cleanup is never re-extracted from a new copy: its hash stays in the index.
+- Every move is a signed journal row (`quarantine`, `attach`, `hold`, `restore`, `delete`).
+- `ingest --cleanup` runs cleanup right after a commit. `cleanup`, `retry`, `ingest --cleanup` exit 2 while
+  images are held: a valid answer, not a failure.
+- Known gap: a byte-identical copy of an already-extracted image is skipped by ingest and left where it is.
 
-Audit log:
-- `.sekerinshotto/audit/<batch_id>.jsonl`, one line per failed, visual, or redacted image:
-  `id`, `source_path`, `outcome`, `reason`, metrics (`ocr_confidence`, `text_chars`, `qr_detected`),
-  `attempts`, `last_attempt_at`, `note_path`.
-- `AUDIT.md` at the root, regenerated each run from those files: counts per reason, then one row per image
-  with a link to its note. It lives with the results, so reading the vault shows the failures.
-- `status --json` reports held count and `held/` size, so growth is visible without opening files.
+Note frontmatter gains `source_state` and `purge_after`; the Source section states where the image is.
+
+Audit:
+- `<state>/audit/<batch>.jsonl`, one line per held, attached or redacted image: `id`, `source_path`,
+  `outcome`, `reason`, `ocr_confidence`, `text_chars`, `qr_detected`, `attempts`, `at`, `note_path`.
+- `<content>/AUDIT.md`, regenerated on every ingest, cleanup, purge, restore and retry: counts per state,
+  next purge time, held images with reason, attempts and a `file://` link to open the image, attachments,
+  and redacted Wi-Fi codes.
+- `status --json` reports held and quarantine bytes and the next purge time.
+
+Measured round trip on a copy of the 182-screenshot sample: 155 quarantined, 14 attached, 13 held (all
+unverified URLs); with the clock pinned 1 s before the deadline 0 were due, at the deadline all were;
+154 purged, the restored one untouched; journal intact.
 
 ## 6a. Classification, duplicate groups, ranking
 

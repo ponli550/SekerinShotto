@@ -154,7 +154,7 @@ def test_end_to_end_plan_commit_rerun(sample):
     d = res["data"]
     # the OCR-read docs.example.com is confirmed by the QR code on the same domain
     assert code == 0 and d["written"] == 1 and d["urls"]["qr"] == 1 and d["urls"]["crossref"] == 1
-    note = next(content.rglob("*.md")).read_text()
+    note = next((content / "notes").rglob("*.md")).read_text()
     assert "[q.example.com/abc](https://q.example.com/abc) · from QR" in note
     assert "[docs.example.com/form](https://docs.example.com/form) · read by OCR, domain crossref" in note
     assert 'source_app: "com.android.chrome"' in note
@@ -376,7 +376,7 @@ def test_score_prefers_qr_and_text():
 def test_organize_moves_note_and_keeps_llm_decision(sample, tmp_path):
     src, content, env = sample
     _run("ingest", str(src), "--content", str(content), "--commit", env=env)
-    note = next(content.rglob("*.md"))
+    note = next((content / "notes").rglob("*.md"))
     assert note.parent.name == "web"                               # chrome screenshot -> web
     note.write_text(note.read_text() + "keep this line\n")
     rules = Path(env["SEKERINSHOTTO_STATE"]) / "rules.toml"
@@ -392,3 +392,82 @@ def test_organize_moves_note_and_keeps_llm_decision(sample, tmp_path):
     final = content / "notes" / "reading" / note.name              # the llm's category decides the folder
     assert 'category: "reading"' in final.read_text() and "keep this line" in final.read_text()
     assert _run("organize", env=env)[1]["data"]["notes_to_write"] == 0
+
+
+# ---------------------------------------------------------------- cleanup (phase 4)
+from sekerinshotto import cleanup as lc
+
+
+def test_purge_guard_refuses_anything_outside_quarantine(tmp_path):
+    state = tmp_path / "state"
+    (state / "quarantine" / "b1").mkdir(parents=True)
+    victim = tmp_path / "users-photo.jpg"
+    victim.write_bytes(b"x")
+    assert lc.purge_file(victim, state) is False                                   # outside
+    link = state / "quarantine" / "b1" / "link.jpg"
+    link.symlink_to(victim)
+    assert lc.purge_file(link, state) is False and victim.exists()                 # symlink escaping out
+    assert lc.purge_file(state / "quarantine" / "b1" / ".." / ".." / ".." / victim.name, state) is False
+    assert lc.purge_file(state / "quarantine", state) is False                     # the folder itself
+    inside = state / "quarantine" / "b2" / "a.jpg"
+    inside.parent.mkdir()
+    inside.write_bytes(b"x")
+    assert lc.purge_file(inside, state) is True and not inside.exists() and not inside.parent.exists()
+
+
+def test_quarantine_is_exactly_seven_days():
+    assert lc.QUARANTINE_SECONDS == 604800
+    rec = {"purge_after": "2026-09-30T05:22:53Z"}
+    assert not lc.is_due(rec, "2026-09-30T05:22:52Z") and lc.is_due(rec, "2026-09-30T05:22:53Z")
+    assert lc.seconds_left(rec, "2026-09-23T05:22:53Z") == 604800
+
+
+def _crec(**kw):
+    base = {"id": "sha256:" + "ab" * 32, "status": "ok", "entities": {"qr": [], "urls": [], "domains": []},
+            "text_coverage": 0.3, "text_chars": 800, "grays": 250, "edges": 0.1, "category": "chat"}
+    return {**base, **kw}
+
+
+@pytest.mark.parametrize("rec,outcome", [
+    (_crec(), "quarantine"),
+    (_crec(status="failed", status_reason="no_text"), "hold"),
+    (_crec(entities={"qr": [], "domains": [], "urls": [{"raw": "x.my", "verified_by": "none"}]}), "hold"),
+    (_crec(entities={"qr": [], "domains": [], "urls": [{"raw": "www.ome", "verified_by": "none", "flag": "invalid_tld"}]}), "quarantine"),
+    (_crec(entities={"qr": [], "domains": [], "urls": [{"raw": "x.my", "verified_by": "none"}]}, confirmed_by="llm"), "quarantine"),
+    (_crec(text_coverage=0.02, text_chars=40), "attach"),                                   # a photo
+    (_crec(text_coverage=0.02, text_chars=40, grays=48, edges=0.01), "quarantine"),         # blank loading screen
+    (_crec(text_coverage=0.02, text_chars=40, entities={"qr": [{"type": "payment", "payload": "p"}], "urls": [], "domains": []}), "quarantine"),
+    (_crec(text_coverage=0.02, text_chars=40, category="system"), "quarantine"),            # home screen
+    (_crec(keep=True), "attach"),
+])
+def test_decide(rec, outcome):
+    assert lc.decide(rec)[0] == outcome
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Apple Vision")
+def test_cleanup_purge_restore_round_trip(sample):
+    src, content, env = sample
+    _run("ingest", str(src), "--content", str(content), "--commit", env=env)
+    code, plan = _run("cleanup", env=env)
+    assert code == 0 and plan["data"]["plan"] == {"quarantine": 1} and len(list(src.iterdir())) == 2
+    code, res = _run("cleanup", "--commit", env={**env, "SEKERINSHOTTO_NOW": "2026-01-01T00:00:00Z"})
+    assert code == 0 and res["data"]["moved"] == {"quarantine": 1}
+    left = [p.name for p in src.iterdir()]
+    assert left == ["copy.png"]                     # the duplicate copy was never ingested, so never moved
+    audit = (content / "AUDIT.md").read_text()
+    assert "| quarantined (purged 7 days after) | 1 |" in audit
+    code, pl = _run("purge", env={**env, "SEKERINSHOTTO_NOW": "2026-01-07T23:59:59Z"})
+    assert pl["data"]["due"] == 0 and pl["data"]["next"][0]["seconds_left"] == 1
+    note = next((content / "notes").rglob("*.md"))
+    iid = note.stem.split("-")[-1]
+    code, r = _run("restore", iid, "--commit", env=env)
+    assert r["data"]["restored"] == 1 and len(list(src.iterdir())) == 2
+    _run("cleanup", "--commit", env={**env, "SEKERINSHOTTO_NOW": "2026-01-01T00:00:00Z"})
+    code, pg = _run("purge", "--commit", env={**env, "SEKERINSHOTTO_NOW": "2026-01-08T00:00:00Z"})
+    assert code == 0 and pg["data"]["purged"] == 1
+    assert "this note is the only record" in note.read_text()
+    code, again = _run("ingest", str(src), "--content", str(content), env=env)
+    assert again["data"]["planned"] == 0                                     # purged hash is not resurrected
+    code, bad = _run("restore", iid, env=env)
+    assert code == 1 and "purged images cannot be restored" in bad["error"]
+    assert _run("status", env=env)[1]["data"]["journal"]["intact"]
