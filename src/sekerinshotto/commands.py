@@ -1396,13 +1396,17 @@ def cmd_dropzone(a, state: State):
     import time
     content = _content_root(state, None, required=True)
     inbox = state.dir("inbox")
-    if not a.commit:
-        return Result({"committed": False, "inbox": str(inbox), "content_root": str(content)},
-                      human=f"drop zone: opens {inbox} in Finder and extracts anything dropped there or onto\n"
-                            "this pane, until you type q.\n")
     state.ensure()
     if not a.no_finder:
+        # Opening a folder changes nothing, so the plan step does it right away: the window is there
+        # before the "type yes" question, and drops made now simply wait in the inbox.
         subprocess.run(["open", str(inbox)], check=False)             # Finder comes to the front
+    if not a.commit:
+        return Result({"committed": False, "inbox": str(inbox), "content_root": str(content)},
+                      human=f"Finder is open on the inbox: {inbox}\n"
+                            "Type yes + Enter to start auto-extracting whatever lands there or is dragged onto\n"
+                            "this pane (q stops it). Photos dropped before that wait in the inbox; I extracts them.\n"
+                            "If typing does nothing, press i in this pane first.\n")
     say = lambda m: (sys.stdout.write(m + "\n"), sys.stdout.flush())
     say(f"DROP ZONE · {inbox}")
     say("  drop photos into the Finder window, or drag them onto this pane (then Enter)")

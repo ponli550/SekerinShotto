@@ -254,7 +254,7 @@ def render(view: str, con, content: Path | None, state_root: Path, category: str
 # ---------------------------------------------------------------- installer
 # panvim runs a key's argument with `bash -c`, so no extra quoting layer: dropped paths (which the terminal
 # pastes shell-escaped) reach sekerinshotto intact, even with spaces or quotes in them.
-CONFIRM = ("sekerinshotto {cmd}; printf '\\ntype {word} to commit, anything else cancels: '; "
+CONFIRM = ("sekerinshotto {cmd}; printf '\\ntype {word} + Enter to commit, anything else cancels: '; "
            "read a; [ \"$a\" = {word} ] && sekerinshotto {cmd} --commit || echo cancelled")
 
 SPECS = {
