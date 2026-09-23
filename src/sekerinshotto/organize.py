@@ -9,6 +9,7 @@ from .extract import hamming
 from .notes import WRITEBACK_BY, read_frontmatter
 from .rules import classify
 from .terms import key_terms
+from . import sequences as seqmod
 
 NEAR_DUP = 0.80          # exact Jaccard of content tokens (words + figures, status/nav bars excluded)
 CONTAINED = 0.85         # |A∩B| / min(|A|,|B|): one screenshot's content sits inside the other (crop, viewer)
@@ -26,7 +27,8 @@ def load_items(con) -> dict[str, dict]:
         rec = json.loads(r["record"])
         rec["_note_path"], rec["_prev"] = r["note_path"], {
             "category": r["category"], "decided_by": r["decided_by"], "why": r["why"], "group": r["group_id"],
-            "rank": r["rank"], "size": r["group_size"], "terms": rec.get("terms", [])}
+            "rank": r["rank"], "size": r["group_size"], "terms": rec.get("terms", []),
+            "sequence": rec.get("sequence"), "seq_part": rec.get("seq_part"), "seq_size": rec.get("seq_size")}
         items[r["id"]] = rec
     for r in con.execute("SELECT id, text FROM text_fts"):
         if r["id"] in items:
@@ -140,10 +142,22 @@ def organize(items: dict[str, dict], rules, content: Path) -> dict[str, dict]:
         ranked.sort(key=lambda i: out[i]["score"], reverse=True)
         for rank, iid in enumerate(ranked, 1):
             out[iid].update(group=gid, rank=rank, size=len(ids))
+
+    for o in out.values():
+        o.update(sequence=None, seq_part=None, seq_size=None)
+    taken_seq = set()
+    for sq in seqmod.find(items, {i: o["group"] for i, o in out.items()}):
+        ids = sq["members"]
+        old = Counter(items[i]["_prev"].get("sequence") for i in ids if items[i]["_prev"].get("sequence"))
+        sid = next((g for g, _ in sorted(old.items(), key=lambda kv: (-kv[1], kv[0])) if g not in taken_seq), None)
+        sid = sid or "seq-" + sorted(ids)[0].split(":")[1][:8]
+        taken_seq.add(sid)
+        for part, iid in enumerate(ids, 1):
+            out[iid].update(sequence=sid, seq_part=part, seq_size=len(ids), seq_text=sq["text"])
     return out
 
 
 def changed(rec: dict, org: dict) -> bool:
     p = rec["_prev"]
-    return (p["category"], p["decided_by"], p.get("why"), p["group"], p["rank"], p["size"], p.get("terms")) != \
-        (org["category"], org["decided_by"], org["why"], org["group"], org["rank"], org["size"], org.get("terms"))
+    keys = ("category", "decided_by", "why", "group", "rank", "size", "terms", "sequence", "seq_part", "seq_size")
+    return tuple(p.get(k) for k in keys) != tuple(org.get(k) for k in keys)

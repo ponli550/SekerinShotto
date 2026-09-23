@@ -15,6 +15,7 @@ from .contract import (AGENT_CONTRACT, COMMIT_ARG, COMMON_ARGS, EXIT_CODES, REGI
                        CONTRACT_VERSION, Arg, Result, ToolError, command)
 from .extract import EXTRACTOR_VERSION, domain_of, extract, iter_images, sha256_file
 from .notes import (NoteConflict, extraction_from_record, manifest_record, note_relpath, render, render_group,
+                    render_sequence,
                     text_from_note, user_part_is_empty)
 from .organize import changed, load_items, organize
 from .rules import load as load_rules
@@ -332,6 +333,7 @@ def apply_organization(state: State, con, content: Path, journal, manifest: Path
     summary = {"rules": rules_src, "notes_to_write": len(targets), "moves": len(moves),
                "by_category": _count(o["category"] for o in org.values()),
                "groups": len(groups), "in_groups": sum(len(v) for v in groups.values()),
+               "sequences": len({o["sequence"] for o in org.values() if o.get("sequence")}),
                "groups_dissolved": sorted(prev_groups - set(groups))}
     if not commit:
         return {**summary, "move_list": moves[:50], "conflicts": []}
@@ -385,6 +387,29 @@ def apply_organization(state: State, con, content: Path, journal, manifest: Path
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(body)
                 journal.append(op="update" if existing else "create", id=gid, path=str(path), batch_id=batch_id)
+        seqs: dict[str, list[str]] = {}
+        for i, o in org.items():
+            if o.get("sequence"):
+                seqs.setdefault(o["sequence"], []).append(i)
+        for sid, ids in seqs.items():
+            ordered = sorted(ids, key=lambda i: org[i]["seq_part"])
+            path = content / "sequences" / f"{sid}.md"
+            existing = path.read_text() if path.exists() else None
+            try:
+                body = render_sequence(sid, [stems.get(i, i) for i in ordered], org[ordered[0]]["seq_text"], existing)
+            except NoteConflict:
+                conflicts.append({"id": sid, "note": f"sequences/{sid}.md"})
+                continue
+            if body != existing:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(body)
+                journal.append(op="update" if existing else "create", id=sid, path=str(path), batch_id=batch_id)
+        prev_seqs = {r["_prev"].get("sequence") for r in items.values() if r["_prev"].get("sequence")}
+        for sid in sorted(prev_seqs - set(seqs)):
+            path = content / "sequences" / f"{sid}.md"
+            if path.exists() and user_part_is_empty(path.read_text()):
+                path.unlink()
+                journal.append(op="delete", id=sid, path=str(path), batch_id=batch_id)
         kept = []
         for gid in summary["groups_dissolved"]:
             path = content / "groups" / f"{gid}.md"
@@ -1052,6 +1077,8 @@ def cmd_panel(a, state: State):
             raise ToolError(f"panel {a.view} needs an id")
         if a.view == "path" and a.id.startswith("grp-"):
             return Result({"_text": str(content / "groups" / f"{a.id}.md") + "\n"})
+        if a.view == "path" and a.id.startswith("seq-"):
+            return Result({"_text": str(content / "sequences" / f"{a.id}.md") + "\n"})
         iid = resolve_id(con, a.id)
         r = con.execute("SELECT note_path, record FROM items WHERE id=?", (iid,)).fetchone()
         if a.view == "path":
