@@ -5,7 +5,7 @@ vault wrapper manages an Obsidian vault. Neither imports the other. They meet
 only at the files and the JSON described here. Any future ingester (PDF, web
 clip, …) that writes this format plugs into the same wrapper.
 
-Status: draft v0.17.0 — 2026-09-23.
+Status: draft v0.18.0 — 2026-09-23.
 
 ## 1. CLI contract (both tools)
 
@@ -207,7 +207,9 @@ can see it; working state and bulky images stay out of the vault.
 Defaults:
 - A state folder is bound to one content root on first commit, in `<state>/binding.json` (not the DB,
   which is disposable). Passing a different `--content` later is an error.
-- `<state>` = `~/.local/share/sekerinshotto/` (override `--state PATH`). Local disk, not synced. Backed up only if Time Machine (or similar) covers it.
+- `<state>` resolves as `--state PATH` > `$SEKERINSHOTTO_STATE` > `config use-state` (in
+  `~/.config/sekerinshotto/config.json`) > `~/.local/share/sekerinshotto/`. Panels pass no `--state`, so
+  `config use-state` is how they follow a non-default state folder. `config show` says which one is active and why. Local disk, not synced. Backed up only if Time Machine (or similar) covers it.
 - `<content>` = the path given by `--content PATH`. Until the main memory vault exists, that folder is
   opened in Obsidian as its own vault. Later it is moved (a real folder, not a symlink) into the main
   vault. Moving it is safe: identity is the `id` hash, and the wrapper reconciles paths.

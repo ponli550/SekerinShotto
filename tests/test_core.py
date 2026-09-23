@@ -804,3 +804,21 @@ def test_end_to_end_scrolled_page(tmp_path):
     notes = sorted((content / "notes").rglob("*.md"))
     assert all("part " in n.read_text() and "of 3 of one scrolled page" in n.read_text() for n in notes)
     assert _run("organize", env=env)[1]["data"]["notes_to_write"] == 0          # stable
+
+
+# ---------------------------------------------------------------- config use-state
+def test_state_resolution_order(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.delenv("SEKERINSHOTTO_STATE", raising=False)
+    assert resolve_state(None) == Path("~/.local/share/sekerinshotto").expanduser().resolve()
+    import os
+    env = {**os.environ, "XDG_CONFIG_HOME": str(tmp_path / "cfg")}
+    env.pop("SEKERINSHOTTO_STATE", None)
+    code, r = _run("config", "use-state", str(tmp_path / "trial"), "--commit", env=env)
+    assert code == 0 and r["data"]["committed"]
+    assert resolve_state(None) == (tmp_path / "trial").resolve()                   # config beats default
+    monkeypatch.setenv("SEKERINSHOTTO_STATE", str(tmp_path / "envstate"))
+    assert resolve_state(None) == (tmp_path / "envstate").resolve()                # env beats config
+    assert resolve_state(str(tmp_path / "arg")) == (tmp_path / "arg").resolve()    # --state beats env
+    code, bad = _run("config", "use-state", "~/Library/Mobile Documents/x", "--commit", env=env)
+    assert code == 1 and "synced" in bad["error"]

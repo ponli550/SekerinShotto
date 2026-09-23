@@ -39,8 +39,25 @@ def plus_seconds(ts: str, seconds: int) -> str:
     return (parse_iso(ts) + timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+DEFAULT_STATE = "~/.local/share/sekerinshotto"
+
+
+def config_path() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME") or "~/.config"
+    return Path(base).expanduser() / "sekerinshotto" / "config.json"
+
+
+def configured_state() -> str | None:
+    """The state folder chosen with `config use-state`; panels have no --state, so they rely on it."""
+    try:
+        return json.loads(config_path().read_text()).get("state")
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
 def resolve_state(arg: str | None) -> Path:
-    raw = arg or os.environ.get("SEKERINSHOTTO_STATE") or "~/.local/share/sekerinshotto"
+    # --state > $SEKERINSHOTTO_STATE > config use-state > default
+    raw = arg or os.environ.get("SEKERINSHOTTO_STATE") or configured_state() or DEFAULT_STATE
     path = Path(raw).expanduser().resolve()
     probe = str(path) + "/"
     for marker in _SYNCED_MARKERS:

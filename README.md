@@ -63,6 +63,7 @@ confidence (about 4 in 5 right on topics in testing). It never changes a note; c
 uv tool install --editable .          # puts `sekerinshotto` on PATH
 sekerinshotto panels install --commit # creates the ss* panels via `panvim new`
 panvim popup ss                       # home panel; h c k g a p n jump between panels
+sekerinshotto config use-state PATH --commit   # if your state folder is not the default
 ```
 
 Panels are read-only and never show screenshot text. Uppercase keys run the plan and ask you to type
