@@ -5,7 +5,7 @@ vault wrapper manages an Obsidian vault. Neither imports the other. They meet
 only at the files and the JSON described here. Any future ingester (PDF, web
 clip, …) that writes this format plugs into the same wrapper.
 
-Status: draft v0.24.0 — 2026-09-23.
+Status: draft v0.25.0 — 2026-09-23.
 
 ## 1. CLI contract (both tools)
 
@@ -410,12 +410,15 @@ Render contract (`sekerinshotto panel <view>`):
 - Row lines start with two spaces and an id; `--row '^  (%S+)'`. `panel path ID` and `panel image ID`
   print paths for keys that open a note or an image.
 
-Search and lists open `ss-results`, a nested board in the side pane: `panel set QUERY [--category C]`
+Search and lists open `ss-results` as its own popup on top (`panvim popup ss-results`), not in the
+current panel's side pane: each nested side pane halved the width, so three levels left a quarter each.
+Home keeps its width underneath; results and the card share the full layer. Previously: `panel set QUERY [--category C]`
 records what it shows (a UI setting in `~/.cache/sekerinshotto/results.json`, not data), then the board
 renders one row per note with a headline — the first content line containing a query word, else one
 containing a key term, else the longest informative line; status bar, clocks and UI words skipped;
 redacted. `show` renders a card (category and why, image state, group, terms, links, QR, text).
-Cards (`v`, Enter on a note) open in read-only nvim reading stdin (top-aligned, wrapped, `/` search, `q`
+Cards (`v`, Enter on a note) open via `show ID --view`, which writes the card to a temp file and execs
+read-only nvim on it (clean side-pane label; gutters off). Previously: read-only nvim reading stdin (top-aligned, wrapped, `/` search, `q`
 closes); `less` inside panvim's terminal pane rendered bottom-aligned. Card text is the content area only:
 status/gesture-bar lines, clocks and bare symbols are dropped, with the count shown.
 Side-pane keys that only print are piped into `less -R` or the nvim viewer: panvim's `term-side`

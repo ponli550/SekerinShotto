@@ -29,7 +29,8 @@ def app_slug(pkg: str | None) -> str:
     if not pkg:
         return "image"
     toks = [t for t in pkg.split(".") if t not in _SKIP_PKG]
-    return (toks[0] if toks else pkg.split(".")[-1])[:24]
+    meaningful = [t for t in toks if len(t) > 3]          # skip short prefixes: ag.jup.jupiter.android
+    return ((meaningful or toks or pkg.split("."))[0])[:24]
 
 
 def note_filename(ex: Extraction) -> str:

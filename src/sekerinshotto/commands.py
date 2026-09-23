@@ -879,7 +879,8 @@ def cmd_list(a, state: State):
 
 
 @command("show", "One item in full: text, URLs, QR codes, category, group, image state (redacted)",
-         args=[Arg("id", "item id, id prefix (>= 8 hex) or note filename")])
+         args=[Arg("id", "item id, id prefix (>= 8 hex) or note filename"),
+               Arg("--view", "open the card in read-only nvim (what the panels use)", flag=True)])
 def cmd_show(a, state: State):
     con = state.connect()
     iid = resolve_id(con, a.id)
@@ -890,8 +891,9 @@ def cmd_show(a, state: State):
              if u.get(k) not in (None, False, 0)} for u in rec["entities"]["urls"]]
     for u in urls:
         u["raw"] = redact(u["raw"])[0]
+    from .notes import app_slug
     card = [f"{iid.split(':')[1][:8]} · {r['category']} · {(r['captured_at'] or '')[:16].replace('T', ' ')} · "
-            f"{(r['source_app'] or '').split('.')[-1]}", f"why: {r['why'] or '-'}",
+            f"{app_slug(r['source_app'])}", f"why: {r['why'] or '-'}",
             f"image: {r['source_state']}" + (f" (purge after {r['purge_after']})" if r["purge_after"] else "")
             + (f" · held: {r['hold_reason']}" if r["hold_reason"] else "")]
     if r["group_id"]:
@@ -908,6 +910,13 @@ def cmd_show(a, state: State):
     card += ["", f"text (redacted, {n} removed; {hidden} status-bar/noise lines hidden):", ""]
     card += [f"  {l}" for l in body] + ["", f"note: {r['note_path']}"]
     human = "\n".join(card) + "\n"
+    if a.view:
+        import tempfile
+        tmp = Path(tempfile.gettempdir()) / f"sekerinshotto-card-{iid.split(':')[1][:8]}.txt"
+        tmp.write_text(human)
+        os.execvp("nvim", ["nvim", "-R", "-n", "-c",
+                           "set nonumber norelativenumber signcolumn=no foldcolumn=0 statuscolumn= wrap linebreak nomodifiable | "
+                           "nnoremap <buffer> q :qa!<CR>", str(tmp)])
     return Result({"id": iid, "note": r["note_path"], "text": text, "redactions": n,
                    "urls": urls, "qr": [redact_qr(q) for q in rec["entities"]["qr"]],
                    "domains": rec["entities"]["domains"],
