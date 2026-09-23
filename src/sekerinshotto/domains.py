@@ -78,7 +78,7 @@ class PSL:
                 self.rules.add(line)
 
     def registrable(self, host: str) -> str | None:
-        """eTLD+1 (e.g. trainocate.com.my), or None if host is itself a public suffix."""
+        """eTLD+1 (e.g. shop.com.my), or None if host is itself a public suffix."""
         labels = host.lower().strip(".").split(".")
         best = 1                                     # default rule "*"
         for i in range(len(labels)):
