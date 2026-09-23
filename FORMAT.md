@@ -5,7 +5,7 @@ vault wrapper manages an Obsidian vault. Neither imports the other. They meet
 only at the files and the JSON described here. Any future ingester (PDF, web
 clip, …) that writes this format plugs into the same wrapper.
 
-Status: draft v0.25.0 — 2026-09-23.
+Status: draft v0.26.0 — 2026-09-23.
 
 ## 1. CLI contract (both tools)
 
@@ -433,12 +433,13 @@ A note named `undated-…` is renamed once when it gains a date (journal `move`)
 `added_at` is set on first insert and never updated (backfilled from the earliest batch for older rows);
 the home panel lists recently added notes by it. `add` prints each created note's path.
 
-Adding photos from a panel: a terminal cannot receive a dropped file, it pastes the file's path as text.
-`A` opens a prompt, so dragging files or folders onto it pastes their (shell-escaped) paths; Enter shows
-the `add` plan, typing `yes` copies them into `<state>/inbox` and extracts them. `f` opens the inbox in
-Finder (drag there instead), `I` extracts the inbox. `add` checks the vault binding before copying
-anything. Keys run through panvim's own `bash -c`, with no extra quoting layer, so paths with spaces or
-quotes arrive intact.
+Adding photos from a panel: `A` opens a drop zone (after a typed `yes`): `dropzone --commit` opens
+`<state>/inbox` in Finder (frontmost) and runs in the side pane until `q`. Files that land in the inbox
+are extracted automatically; paths dragged onto the pane (a terminal pastes them shell-escaped) are copied
+into the inbox and extracted; each new note is printed. Finder MOVES files dragged between folders on the
+same disk (hold Option to copy); dropping onto the pane always copies. `I` extracts the inbox by hand.
+`add` checks the vault binding before copying anything. The results board's query lives in
+`<state>/results.json`, so two state folders never share it.
 
 Enter (`[direct] <CR>`) drills down everywhere: on a category, image state or key term it opens the
 results board; on a note row it opens the card. Only the left column of a two-column board takes Enter,

@@ -1,6 +1,7 @@
 """Phase 1 commands: schema, ingest, status, reindex."""
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
@@ -1122,7 +1123,7 @@ from . import panels as pv  # noqa: E402
                Arg("--category", "notes view: only this category")],
          details="What panvim runs on its timer. Reads the index only, never extraction or Laya. "
                  "`panel set QUERY [--category C]` chooses what the results view shows (a UI setting in "
-                 "~/.cache/sekerinshotto, not data). `panel path ID` / `panel image ID` print paths.")
+                 "<state>/results.json, not data). `panel path ID` / `panel image ID` print paths.")
 def cmd_panel(a, state: State):
     if not state.exists:
         return Result({"_text": "SekerinShotto — not initialised\n\nRun: sekerinshotto ingest <folder> --content <vault folder> --commit\n"})
@@ -1134,10 +1135,10 @@ def cmd_panel(a, state: State):
     if a.view == "set-row":
         if not a.id:
             raise ToolError("panel set-row needs a row value")
-        q = pv.set_row(state.connect(), a.id)
+        q = pv.set_row(state.root, state.connect(), a.id)
         return Result({"_text": f"results: {q}\n"})
     if a.view == "set":
-        q = pv.set_query(a.id, a.category)
+        q = pv.set_query(state.root, a.id, a.category)
         return Result({"_text": f"results: {q['query'] or '*'}{' in ' + q['category'] if q['category'] else ''}\n"})
     if a.view in ("path", "image"):
         if not a.id:
@@ -1376,3 +1377,86 @@ def cmd_add(a, state: State):
     lines += ["", "the copies wait in the inbox until cleanup (C) routes them"]
     return Result({"committed": True, "placed": placed, **plan, "notes": notes, "ingest": d},
                   violation=res.violation, human="\n".join(lines) + "\n")
+
+
+# ---------------------------------------------------------------- drop zone
+@command("dropzone", "Open the inbox in Finder and auto-extract whatever lands in it, until you type q",
+         args=[Arg("--interval", "seconds between inbox checks", type=int, default=2),
+               Arg("--no-finder", "do not open the Finder window", flag=True)],
+         writes=True,
+         details="Plan: says what it will do. Commit: opens <state>/inbox in Finder (frontmost), then loops: "
+                 "new files in the inbox are extracted; a line of paths typed or dropped onto this terminal is "
+                 "copied into the inbox and extracted; each new note is printed. `q` + Enter stops. Finder "
+                 "MOVES files dragged between folders on the same disk; hold Option to copy.")
+def cmd_dropzone(a, state: State):
+    import select
+    import shlex
+    import subprocess
+    import sys
+    import time
+    content = _content_root(state, None, required=True)
+    inbox = state.dir("inbox")
+    if not a.commit:
+        return Result({"committed": False, "inbox": str(inbox), "content_root": str(content)},
+                      human=f"drop zone: opens {inbox} in Finder and extracts anything dropped there or onto\n"
+                            "this pane, until you type q.\n")
+    state.ensure()
+    if not a.no_finder:
+        subprocess.run(["open", str(inbox)], check=False)             # Finder comes to the front
+    say = lambda m: (sys.stdout.write(m + "\n"), sys.stdout.flush())
+    say(f"DROP ZONE · {inbox}")
+    say("  drop photos into the Finder window, or drag them onto this pane (then Enter)")
+    say("  Finder MOVES files between folders on the same disk: hold ⌥ Option while dropping to copy")
+    say("  q + Enter stops\n")
+    added_total, seen = 0, set()
+
+    def extract(label: str) -> None:
+        nonlocal added_total
+        ns = argparse.Namespace(src=str(inbox), content=None, limit=None, workers=4, cleanup=False, commit=True,
+                                json=False, state=None)
+        con = state.connect()
+        before = {r[0] for r in con.execute("SELECT id FROM items")}
+        res = cmd_ingest(ns, state)
+        new = [dict(r) for r in state.connect().execute(
+            "SELECT substr(id,8,8) AS id8, category, note_path, id FROM items")]
+        fresh = [n for n in new if n["id"] not in before]
+        added_total += len(fresh)
+        for n in fresh:
+            say(f"  + {n['id8']}  {n['category']:<13} {n['note_path']}")
+        if not fresh and res.data.get("planned"):
+            say(f"  {label}: re-extracted {res.data['planned']}")
+
+    def pending() -> list[Path]:
+        return [p for p in inbox.iterdir() if p.is_file() and not p.name.startswith(".")
+                and p.suffix.lower() in IMAGE_EXTS and (p.name, p.stat().st_mtime) not in seen]
+
+    for p in pending():                                        # what is already there counts as seen
+        seen.add((p.name, p.stat().st_mtime))
+    try:
+        while True:
+            ready, _, _ = select.select([sys.stdin], [], [], max(1, a.interval))
+            if ready:
+                line = sys.stdin.readline()
+                if not line or line.strip().lower() in ("q", "quit", "exit"):
+                    break
+                try:
+                    files, skipped = _expand(shlex.split(line))
+                except ValueError:
+                    files, skipped = [], [line.strip()]
+                for f in files:
+                    dst = inbox / f.name
+                    if not dst.exists():
+                        shutil.copy2(f, dst)
+                if skipped:
+                    say(f"  skipped (not images): {', '.join(skipped)[:120]}")
+            new = pending()
+            if new:
+                time.sleep(0.5)                                # let Finder finish writing
+                for p in new:
+                    seen.add((p.name, p.stat().st_mtime))
+                say(f"  {len(new)} new file(s) — extracting…")
+                extract("inbox")
+    except KeyboardInterrupt:
+        pass
+    say(f"\ndrop zone closed · {added_total} new note(s)")
+    return Result({"committed": True, "added": added_total}, human="")

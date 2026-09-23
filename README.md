@@ -67,8 +67,9 @@ panvim popup ss                       # home panel; h c k g a p n jump between p
 sekerinshotto config use-state PATH --commit   # if your state folder is not the default
 ```
 
-To add photos from the panel: press Space A, drag files or folders from Finder onto the prompt, press
-Enter, check the plan, type `yes`. Or press f to open the inbox in Finder, drop them there, and press I.
+To add photos from the panel: press Space A, type `yes`. The inbox opens in Finder and a drop zone runs
+beside the board: drop photos into that Finder window (hold ⌥ Option to copy instead of move), or drag them
+onto the drop-zone pane and press Enter. New notes are listed as they are made; type q to stop.
 
 Panels are read-only and never show screenshot text. Uppercase keys run the plan and ask you to type
 `yes` before committing.

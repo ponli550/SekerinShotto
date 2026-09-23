@@ -647,7 +647,7 @@ def test_panels_render_read_only_and_never_show_text(sample):
     _run("ingest", str(src), "--content", str(content), "--commit", env=env)
     state = Path(env["SEKERINSHOTTO_STATE"])
     before = sorted(p.name for p in (state / "journal").glob("*"))
-    for view in pv.VIEWS:
+    for view in [v for v in pv.VIEWS if v != "results"]:      # results is on-demand (a key opens it)
         p = subprocess.run([sys.executable, "-m", "sekerinshotto.cli", "panel", view], capture_output=True,
                            text=True, env=env)
         assert p.returncode == 0 and p.stdout
@@ -878,7 +878,7 @@ def test_side_pane_keys_run_something_that_stays_open(name):
         if len(parts) >= 4 and ("term-side" in parts[2]):
             arg = parts[3].rstrip()
             assert arg.startswith("nvim ") or arg.endswith("| less -R") or arg.endswith("-popup") \
-                or arg.endswith("--view"), line
+                or arg.endswith("--view") or "dropzone --commit" in arg, line
 
 
 def test_headline_prefers_query_then_terms_and_skips_noise():
@@ -907,19 +907,23 @@ def test_stopterms_file_excludes_words(tmp_path):
     assert "afif" not in {t for v in key_terms(texts, load_stopterms(tmp_path)).values() for t in v}
 
 
-def test_confirm_keeps_dropped_paths_intact(tmp_path):
-    """The A key: panvim runs the argument with bash -c after substituting {input} with what the terminal
-    pasted on drop (shell-escaped paths). A 'no' must add nothing; a path with spaces must reach `add`."""
+def test_add_takes_shell_escaped_dropped_paths(tmp_path):
+    """What a terminal pastes on drop: shell-escaped paths. `add` (and the drop zone) take them intact."""
     import os
     d = tmp_path / "My Photos"
     d.mkdir()
     Image.new("RGB", (40, 40), "white").save(d / "a b.png")
-    line = next(l for l in pv.keys_for("ss").splitlines() if l.startswith("A\t"))
-    cmd = line.split("\t")[2].split("|", 2)[2].replace("{input}", str(d).replace(" ", "\\ "))
     env = {**os.environ, "SEKERINSHOTTO_STATE": str(tmp_path / "st"), "SEKERINSHOTTO_CONTENT": str(tmp_path / "vault")}
-    p = subprocess.run(["bash", "-c", cmd], input="no\n", capture_output=True, text=True, env=env)
-    assert "would copy 1 image(s)" in p.stdout and "cancelled" in p.stdout
-    assert not (tmp_path / "st" / "inbox").exists() or not any((tmp_path / "st" / "inbox").iterdir())
+    p = subprocess.run(["bash", "-c", f"{sys.executable} -m sekerinshotto.cli add " + str(d).replace(" ", "\\ ")],
+                       capture_output=True, text=True, env=env)
+    assert "would copy 1 image(s)" in p.stdout
+
+
+def test_A_is_the_drop_zone_and_f_is_gone():
+    keys = pv.keys_for("ss").splitlines()
+    a = next(l for l in keys if l.startswith("A\t"))
+    assert "dropzone" in a and "\tterm-side\t" in a and '[ "$a" = yes ]' in a
+    assert not any(l.startswith("f\t") for l in keys)
 
 
 def test_add_checks_the_vault_before_copying(tmp_path):
