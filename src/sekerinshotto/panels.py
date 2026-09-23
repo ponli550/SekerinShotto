@@ -29,6 +29,16 @@ def countdown(seconds: int) -> str:
     return f"{d}d {h:02d}h {m:02d}m {s:02d}s"
 
 
+def _short_reason(reason: str) -> str:
+    """'unverified URL: https://a.my/long/path, b.com' -> 'unverified URL: a.my, b.com' (the domain is what
+    `domains allow` needs; a cut-off path is noise)."""
+    head, _, rest = reason.partition(": ")
+    if head != "unverified URL" or not rest:
+        return reason
+    hosts = [u.split("://", 1)[-1].split("/", 1)[0].lower() for u in rest.split(", ")]
+    return f"{head}: {', '.join(dict.fromkeys(hosts))}"
+
+
 def _q(con, sql, params=()):
     return con.execute(sql, params).fetchall()
 
@@ -87,7 +97,8 @@ def render(view: str, con, content: Path | None, state_root: Path, category: str
         for iid, st, reason, att, note in _q(con, """SELECT substr(id,8,8), source_state, hold_reason,
                 attempts, note_path FROM items WHERE source_state IN ('held','attached')
                 ORDER BY source_state DESC, hold_reason"""):
-            why = (reason or "visual, kept in the vault")[:48]
+            why = _short_reason(reason) if reason else "visual or diagram, kept in the vault"
+            why = why[:48]
             out.append(f"  {iid}  {st:<8} {why:<48} tries {att or 0}  {Path(note).stem if note else ''}")
     elif view == "quarantine":
         out += [f"quarantine · purged exactly 7 days after cleanup · now {now}", ""]
@@ -111,12 +122,12 @@ CONFIRM = ("sh -c 'sekerinshotto {cmd}; printf \"\\ntype {word} to commit, anyth
 
 SPECS = {
     "ss": ("SekerinShotto", "home", 10, False, "86x40"),
-    "ss-class": ("ss · categories", "class", 30, True, "70x34"),
-    "ss-concepts": ("ss · concepts", "concepts", 60, True, "70x40"),
-    "ss-groups": ("ss · groups", "groups", 30, True, "96x34"),
-    "ss-audit": ("ss · audit", "audit", 15, True, "120x36"),
-    "ss-quarantine": ("ss · quarantine", "quarantine", 1, True, "110x36"),
-    "ss-notes": ("ss · notes", "notes", 30, True, "110x40"),
+    "ss-class": ("ss·categories", "class", 30, True, "70x34"),
+    "ss-concepts": ("ss·concepts", "concepts", 60, True, "70x40"),
+    "ss-groups": ("ss·groups", "groups", 30, True, "96x34"),
+    "ss-audit": ("ss·audit", "audit", 15, True, "120x36"),
+    "ss-quarantine": ("ss·quarantine", "quarantine", 1, True, "110x36"),
+    "ss-notes": ("ss·notes", "notes", 30, True, "110x40"),
 }
 
 
@@ -203,6 +214,28 @@ def install(commit: bool) -> dict:
         (cfg / name).mkdir(parents=True, exist_ok=True)
         (cfg / name / "keys.tsv").write_text(keys_for(name))
         (cfg / name / "syntax.tsv").write_text(SYNTAX)
+    repaired = _repair_wrappers()
     audit = subprocess.run(["panvim", "audit"], capture_output=True, text=True)
-    return {"committed": True, "created": created, "rewrote_keys": list(SPECS), "failures": failures,
+    return {"committed": True, "created": created, "rewrote_keys": list(SPECS), "repaired_wrappers": repaired,
+            "failures": failures,
             "panvim_audit": {"exit": audit.returncode, "output": (audit.stdout + audit.stderr)[-1500:]}}
+
+
+def _repair_wrappers() -> list[str]:
+    """`panvim new` writes `--title %s` unquoted, so a title with a space breaks the wrapper (the shell
+    splits it and `panvim view` exits 1). Rewrite only that line, only in our own ss* wrappers."""
+    import re
+    import shlex
+    fixed = []
+    bindir = Path.home() / ".local" / "bin"
+    for name, (title, *_rest) in SPECS.items():
+        w = bindir / f"{name}-popup"
+        if not w.exists():
+            continue
+        text = w.read_text()
+        new = re.sub(r"(exec panvim view --title )(.*?)( \\\n)", lambda m: m.group(1) + shlex.quote(title) + m.group(3),
+                     text, count=1)
+        if new != text:
+            w.write_text(new)
+            fixed.append(name)
+    return fixed

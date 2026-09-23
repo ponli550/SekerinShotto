@@ -822,3 +822,18 @@ def test_state_resolution_order(tmp_path, monkeypatch):
     assert resolve_state(str(tmp_path / "arg")) == (tmp_path / "arg").resolve()    # --state beats env
     code, bad = _run("config", "use-state", "~/Library/Mobile Documents/x", "--commit", env=env)
     assert code == 1 and "synced" in bad["error"]
+
+
+def test_panel_titles_have_no_spaces_and_reasons_are_short():
+    assert all(" " not in title for title, *_ in pv.SPECS.values())     # panvim new writes titles unquoted
+    assert pv._short_reason("unverified URL: https://a.my/very/long/path, www.b.com") == "unverified URL: a.my, www.b.com"
+    assert pv._short_reason("no_text") == "no_text"
+
+
+def test_repair_wrappers_quotes_the_title(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / ".local" / "bin").mkdir(parents=True)
+    w = tmp_path / ".local" / "bin" / "ss-audit-popup"
+    w.write_text("#!/bin/bash\nexec panvim view --title ss · audit \\\n  --render 'x' --interval 15\n")
+    assert pv._repair_wrappers() == ["ss-audit"]
+    assert "--title 'ss·audit' \\\n" in w.read_text() and pv._repair_wrappers() == []   # idempotent
