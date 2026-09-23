@@ -13,14 +13,14 @@ from pathlib import Path
 from . import __version__
 from .contract import (AGENT_CONTRACT, COMMIT_ARG, COMMON_ARGS, EXIT_CODES, REGISTRY, SCHEMA_VERSION,
                        CONTRACT_VERSION, Arg, Result, ToolError, command)
-from .extract import EXTRACTOR_VERSION, extract, iter_images, sha256_file
+from .extract import EXTRACTOR_VERSION, domain_of, extract, iter_images, sha256_file
 from .notes import (NoteConflict, extraction_from_record, manifest_record, note_relpath, render, render_group,
                     text_from_note, user_part_is_empty)
 from .organize import changed, load_items, organize
 from .rules import load as load_rules
 from .domains import DomainIndex, update as domains_update
 from .state import State, now_iso, verify_journal
-from .urlfix import fix_urls, qr_domains_of
+from .urlfix import fix_urls, load_allowed, qr_domains_of, raw_host_of, resolve
 
 
 def _content_root(state: State, arg: str | None, required: bool) -> Path | None:
@@ -124,8 +124,9 @@ def cmd_ingest(a, state: State):
         qr_known = qr_domains_of([r[0] for r in con.execute(
             "SELECT value FROM entities WHERE kind='url' AND verified_by='qr'")], dom)
         qr_known |= qr_domains_of([u["url"] for ex in results for u in ex.urls if u["verified_by"] == "qr"], dom)
+        allowed = load_allowed(state.dir("domains"))
         for ex in results:
-            fix_urls(ex, dom, qr_known)
+            fix_urls(ex, dom, qr_known, allowed)
         ingested = now_iso()
         fresh = set()
         for ex in results:
@@ -281,7 +282,10 @@ def cmd_domains_update(a, state: State):
                        "would_download": ["Tranco top-1M (~10 MB)", "Public Suffix List", "IANA TLD list"]})
     with state.lock():
         new = domains_update(state.dir("domains"))
-    return Result({"committed": True, "previous": info or None, "current": new})
+        content = _content_root(state, None, required=False)
+        res = reverify(state, state.connect(), content, now_iso().replace(":", "-") + "-domains") \
+            if content and state.exists else None
+    return Result({"committed": True, "previous": info or None, "current": new, "reverify": res})
 
 
 # ---------------------------------------------------------------- organize
@@ -610,7 +614,7 @@ def cmd_retry(a, state: State):
             if not path or not path.exists():
                 continue
             ex = extract(path, r["id"])
-            fix_urls(ex, dom, qr_known)
+            fix_urls(ex, dom, qr_known, load_allowed(state.dir("domains")))
             ex.path = Path(r["source_path"])                 # the note keeps naming the original file
             for k in ("stored_path", "keep", "confirmed_by", "hold_reason"):
                 setattr(ex, k, r.get(k))
@@ -838,3 +842,133 @@ def cmd_tag(a, state: State):
     new = con.execute("SELECT note_path, category FROM items WHERE id=?", (iid,)).fetchone()
     return Result({"committed": True, **plan, "note": new["note_path"], "notes_rewritten": rer["notes_written"],
                    "conflicts": rer["conflicts"]}, violation=bool(rer["conflicts"]))
+
+
+# ---------------------------------------------------------------- allowlist (phase 6)
+def reverify(state: State, con, content: Path, batch_id: str) -> dict:
+    """Re-check every stored OCR URL against the current domain list, QR crossref and allowlist.
+    No image is read; held images whose URLs now pass are released by a scoped cleanup."""
+    dom = DomainIndex(state.dir("domains"))
+    allowed = load_allowed(state.dir("domains"))
+    qr_known = qr_domains_of([r[0] for r in con.execute(
+        "SELECT value FROM entities WHERE kind='url' AND verified_by='qr'")], dom)
+    changed_ids = set()
+    for rec in _records(con):
+        ex = extraction_from_record(rec, "")
+        before = json.dumps(rec["entities"]["urls"], sort_keys=True)
+        fix_urls(ex, dom, qr_known, allowed)
+        if json.dumps(ex.urls, sort_keys=True) != before:
+            ents = {**rec["entities"], "urls": ex.urls, "domains": sorted({domain_of(u["url"]) for u in ex.urls})}
+            _save(con, rec, entities=ents)
+            changed_ids.add(rec["id"])
+    con.commit()
+    journal = state.journal(batch_id)
+    rer = _rerender(state, con, content, journal, batch_id, changed_ids)
+    con.commit()
+    held = {r[0] for r in con.execute("SELECT id FROM items WHERE source_state='held'")} & changed_ids
+    released = run_cleanup(state, con, content, True, batch_id, only=held) if held else {"moved": {}}
+    if not held:
+        _write_audit(state, con, content)
+    return {"urls_changed_in": len(changed_ids), "notes_rewritten": rer["notes_written"],
+            "held_rechecked": len(held), "released": released["moved"],
+            "held_total": con.execute("SELECT COUNT(*) FROM items WHERE source_state='held'").fetchone()[0]}
+
+
+def _allow_targets(state: State, raw: str) -> list[str]:
+    dom = DomainIndex(state.dir("domains"))
+    if not dom.available:
+        # Without the Public Suffix List, "27a.onrender.com" would be stored as "onrender.com" and vouch
+        # for every app on that host. Refuse rather than guess.
+        raise ToolError("the allowlist needs the Public Suffix List: run `domains update --commit` first")
+    out = []
+    for d in [x.strip().lower().removeprefix("https://").removeprefix("http://").split("/")[0]
+              for x in raw.split(",") if x.strip()]:
+        if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+", d):
+            raise ToolError(f"{d!r} is not a domain name")
+        if not dom.valid_tld(d):
+            raise ToolError(f"{d!r}: .{d.rsplit('.', 1)[-1]} is not a real top-level domain")
+        reg = dom.registrable(d)
+        if not reg:
+            raise ToolError(f"{d!r} is a public suffix (like com.my), not a site")
+        out.append(reg)
+    if not out:
+        raise ToolError("give at least one domain, e.g. hackfest2026.my or a,b,c")
+    return sorted(set(out))
+
+
+def _write_allowed(state: State, domains: set[str]) -> None:
+    f = state.dir("domains") / "allow.txt"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text("# domains you vouch for; one registrable domain per line (managed by `domains allow`)\n"
+                 + "".join(d + "\n" for d in sorted(domains)))
+
+
+@command("domains allow", "Vouch for domains too small for the Tranco list; re-verifies stored URLs",
+         args=[Arg("domains", "one domain or a comma-separated list; stored as the registrable domain")],
+         writes=True,
+         details="Allowing asserts the domain is real. OCR URLs on it become verified_by: allowed (links in "
+                 "notes), it counts as evidence when correcting lookalikes, and held images whose last "
+                 "unverified URL it covers are released. No image is re-read.")
+def cmd_domains_allow(a, state: State):
+    targets = _allow_targets(state, a.domains)
+    current = load_allowed(state.dir("domains"))
+    new = [d for d in targets if d not in current]
+    if not a.commit:
+        return Result({"committed": False, "would_add": new, "already": sorted(set(targets) - set(new))})
+    content = _content_root(state, None, required=True)
+    with state.lock():
+        _write_allowed(state, current | set(targets))
+        con = state.connect()
+        res = reverify(state, con, content, now_iso().replace(":", "-") + "-allow")
+    return Result({"committed": True, "added": new, "allowlist_size": len(current | set(targets)), **res})
+
+
+@command("domains unallow", "Remove domains from the allowlist; re-verifies stored URLs",
+         args=[Arg("domains", "one domain or a comma-separated list")],
+         writes=True,
+         details="URLs verified only by the allowlist go back to verified_by: none and stop being links. "
+                 "Images already quarantined or purged are not pulled back.")
+def cmd_domains_unallow(a, state: State):
+    targets = _allow_targets(state, a.domains)
+    current = load_allowed(state.dir("domains"))
+    gone = [d for d in targets if d in current]
+    if not a.commit:
+        return Result({"committed": False, "would_remove": gone, "not_listed": sorted(set(targets) - set(gone))})
+    content = _content_root(state, None, required=True)
+    with state.lock():
+        _write_allowed(state, current - set(targets))
+        con = state.connect()
+        res = reverify(state, con, content, now_iso().replace(":", "-") + "-unallow")
+    return Result({"committed": True, "removed": gone, **res})
+
+
+@command("domains list", "The allowlist and the reference-list version")
+def cmd_domains_list(a, state: State):
+    return Result({"allowed": sorted(load_allowed(state.dir("domains"))),
+                   "reference": DomainIndex(state.dir("domains")).info or None})
+
+
+@command("domains suggest", "Unverified domains read by OCR, ranked by how many held images they would release",
+         args=[Arg("--limit", "at most N domains", type=int, default=30)],
+         details="Candidates for `domains allow`. Check each one is a real site you trust before allowing it; "
+                 "an OCR misread of a lookalike would be vouched for too.")
+def cmd_domains_suggest(a, state: State):
+    con = state.connect()
+    dom = DomainIndex(state.dir("domains"))
+    agg: dict[str, dict] = {}
+    for rec in _records(con):
+        for u in rec["entities"]["urls"]:
+            if u["verified_by"] != "none" or u.get("flag"):
+                continue
+            host = u["url"].split("://", 1)[-1].split("/", 1)[0]
+            reg = (dom.registrable(host) if dom.available else ".".join(host.split(".")[-2:])) or host
+            e = agg.setdefault(reg, {"domain": reg, "urls": 0, "notes": set(), "held": set(), "examples": []})
+            e["urls"] += 1
+            e["notes"].add(rec["id"])
+            if rec.get("source_state") == "held":
+                e["held"].add(rec["id"])
+            if len(e["examples"]) < 3 and u["raw"] not in e["examples"]:
+                e["examples"].append(redact(u["raw"])[0])
+    rows = sorted(agg.values(), key=lambda e: (-len(e["held"]), -len(e["notes"]), e["domain"]))[:a.limit]
+    return Result({"suggestions": [{"domain": e["domain"], "urls": e["urls"], "notes": len(e["notes"]),
+                                    "held_images": len(e["held"]), "examples": e["examples"]} for e in rows]})

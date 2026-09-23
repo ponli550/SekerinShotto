@@ -56,7 +56,7 @@ def candidates(raw_host: str) -> dict[str, int]:
     return out
 
 
-def resolve(raw_host: str, dom: DomainIndex, qr_domains: set[str]) -> dict:
+def resolve(raw_host: str, dom: DomainIndex, qr_domains: set[str], allowed: set[str] = frozenset()) -> dict:
     """-> {"host", "verified_by", "corrected", "reason", "flag"} for one OCR-read host."""
     host = raw_host.lower()
     valid_syntax = bool(_HOST_OK.match(host))
@@ -67,6 +67,8 @@ def resolve(raw_host: str, dom: DomainIndex, qr_domains: set[str]) -> dict:
 
     if valid_syntax and reg(host) in qr_domains:
         return {**res, "verified_by": "crossref", "reason": "domain also decoded from a QR code"}
+    if valid_syntax and reg(host) in allowed:
+        return {**res, "verified_by": "allowed", "reason": f"{reg(host)} is on your allowlist"}
     raw_rank = dom.rank(reg(host)) if valid_syntax else None
     if raw_rank is not None and raw_rank <= POPULAR:
         return {**res, "verified_by": "known", "reason": f"{reg(host)} Tranco rank {raw_rank}"}
@@ -78,6 +80,8 @@ def resolve(raw_host: str, dom: DomainIndex, qr_domains: set[str]) -> dict:
         r = reg(c)
         if r in qr_domains:
             scored.append((0, edits, c, f"{r} decoded from a QR code"))
+        elif r in allowed:
+            scored.append((0, edits, c, f"{r} is on your allowlist"))
         else:
             rk = dom.rank(r)
             if rk is not None:
@@ -90,7 +94,7 @@ def resolve(raw_host: str, dom: DomainIndex, qr_domains: set[str]) -> dict:
             reg(scored[1][1]) == reg(best)
         beats_raw = (not valid_syntax) or raw_rank is None or raw_rank >= max(best_rank, 1) * MARGIN
         if unique and beats_raw:
-            vb = "crossref" if best_rank == 0 else "known"
+            vb = ("allowed" if "allowlist" in why else "crossref") if best_rank == 0 else "known"
             raw_part = "not a valid host" if not valid_syntax else (f"rank {raw_rank}" if raw_rank else "unranked")
             return {**res, "host": best, "verified_by": vb, "corrected": True,
                     "reason": f"{why}; raw reading {raw_part}"}
@@ -105,7 +109,7 @@ def resolve(raw_host: str, dom: DomainIndex, qr_domains: set[str]) -> dict:
     return res
 
 
-def fix_urls(ex, dom: DomainIndex, qr_domains: set[str]) -> None:
+def fix_urls(ex, dom: DomainIndex, qr_domains: set[str], allowed: set[str] = frozenset()) -> None:
     """Resolve every OCR-read URL of one extraction in place. QR-decoded URLs are untouched."""
     from urllib.parse import urlsplit
     from .extract import raw_host
@@ -115,7 +119,7 @@ def fix_urls(ex, dom: DomainIndex, qr_domains: set[str]) -> None:
         if u["verified_by"] == "qr":
             kept.append(u)
             continue
-        r = resolve(raw_host(u["raw"]), dom, qr_domains)
+        r = resolve(raw_host(u["raw"]), dom, qr_domains, allowed)
         parts = urlsplit(u["url"])
         url = f"{parts.scheme}://{r['host']}{parts.path}" + (f"?{parts.query}" if parts.query else "")
         if url in seen:
@@ -138,3 +142,15 @@ def qr_domains_of(urls, dom: DomainIndex) -> set[str]:
         if r:
             out.add(r)
     return out
+
+
+def load_allowed(folder) -> set[str]:
+    f = folder / "allow.txt"
+    if not f.exists():
+        return set()
+    return {ln.strip().lower() for ln in f.read_text().splitlines() if ln.strip() and not ln.startswith("#")}
+
+
+def raw_host_of(raw: str) -> str:
+    from .extract import raw_host
+    return raw_host(raw)

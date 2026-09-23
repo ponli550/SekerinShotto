@@ -525,3 +525,49 @@ def test_search_show_and_grounded_tag(sample):
     _run("organize", "--commit", env=env)
     shown = _run("show", iid, env=env)[1]["data"]
     assert shown["category"] == "signup" and shown["decided_by"] == "llm" and "quoting" in shown["why"]
+
+
+# ---------------------------------------------------------------- allowlist (phase 6)
+def test_allowlist_verifies_and_corrects(dom):
+    allowed = {"hackfest2026.my"}
+    r = resolve("hackfest2026.my", dom, set(), allowed)
+    assert (r["verified_by"], r["corrected"]) == ("allowed", False)
+    r = resolve("hackfest2O26.my", dom, set(), allowed)                         # O read for 0
+    assert (r["host"], r["verified_by"], r["corrected"]) == ("hackfest2026.my", "allowed", True)
+    assert resolve("unknownsite.my", dom, set(), allowed)["verified_by"] == "none"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Apple Vision")
+def test_allow_releases_held_image(tmp_path):
+    import os
+    import zxingcpp  # noqa: F401
+    img = Image.new("RGB", (1200, 900), "white")
+    ImageDraw.Draw(img).text((40, 300), "Join us at smallclub.my this weekend", fill="black",
+                             font=ImageFont.load_default(size=48))
+    src = tmp_path / "in"
+    src.mkdir()
+    img.save(src / "Screenshot_20260101_120000_com_whatsapp_Conversation.png")
+    env = {**os.environ, "SEKERINSHOTTO_STATE": str(tmp_path / "state")}
+    content = tmp_path / "content"
+    code, need = _run("domains", "allow", "smallclub.my", env=env)
+    assert code == 1 and "domains update" in need["error"]               # never guesses without the PSL
+    doms = tmp_path / "state" / "domains"
+    doms.mkdir(parents=True)
+    con = _sq.connect(doms / "ranks.sqlite")
+    con.execute("CREATE TABLE ranks (domain TEXT PRIMARY KEY, rank INTEGER)")
+    con.commit()
+    con.close()
+    (doms / "psl.dat").write_text("com\nmy\ncom.my\nonrender.com\n")
+    (doms / "tlds.txt").write_text("COM\nMY\n")
+    _run("ingest", str(src), "--content", str(content), "--commit", "--cleanup", env=env)
+    st = _run("status", env=env)[1]["data"]
+    assert st["by_source_state"] == {"held": 1}
+    assert _run("domains", "suggest", env=env)[1]["data"]["suggestions"][0]["domain"] == "smallclub.my"
+    code, bad = _run("domains", "allow", "com.my", env=env)
+    assert code == 1 and "public suffix" in bad["error"]
+    code, ok = _run("domains", "allow", "27a.onrender.com", env=env)
+    assert ok["data"]["would_add"] == ["27a.onrender.com"]                # not all of onrender.com
+    code, ok = _run("domains", "allow", "smallclub.my", "--commit", env=env)
+    assert code == 0 and ok["data"]["released"] == {"quarantine": 1} and ok["data"]["held_total"] == 0
+    note = next((content / "notes").rglob("*.md")).read_text()
+    assert "[smallclub.my](https://smallclub.my)" in note and "allowlist" in note

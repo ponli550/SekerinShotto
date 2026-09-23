@@ -97,7 +97,7 @@ def _fence(text: str) -> str:
 
 
 def _linkable(u: dict) -> bool:
-    return u["verified_by"] in ("qr", "known", "crossref") and not u.get("flag")
+    return u["verified_by"] in ("qr", "known", "crossref", "allowed") and not u.get("flag")
 
 
 def generated_body(ex: Extraction, org: dict | None = None) -> str:
@@ -116,10 +116,10 @@ def generated_body(ex: Extraction, org: dict | None = None) -> str:
                 out.append(f"- `{u['raw']}…` · cut off on screen — not a link")
             elif flag in ("invalid_tld", "invalid_host"):
                 out.append(f"- `{u['raw']}` · not a valid address (likely cut off) — not a link")
-            elif vb in ("known", "crossref") and u.get("corrected"):
+            elif vb in ("known", "crossref", "allowed") and u.get("corrected"):
                 # corrected to a well-ranked domain; the raw reading stays visible
                 out.append(f"- [{label}]({u['url']}) · corrected, read as `{u['raw']}` ({u['reason']})")
-            elif vb in ("known", "crossref"):
+            elif vb in ("known", "crossref", "allowed"):
                 out.append(f"- [{label}]({u['url']}) · read by OCR, domain {vb} ({u['reason']})")
             else:
                 # OCR misreads produce lookalike domains (docs.qoogle.com); never make them clickable.

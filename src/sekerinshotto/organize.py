@@ -94,7 +94,7 @@ def group(items: dict[str, dict]) -> tuple[dict[str, list[str]], list[tuple]]:
 
 def score(rec: dict) -> tuple[float, str]:
     qr = len(rec["entities"]["qr"])
-    links = sum(1 for u in rec["entities"]["urls"] if u["verified_by"] in ("qr", "known", "crossref") and not u.get("flag"))
+    links = sum(1 for u in rec["entities"]["urls"] if u["verified_by"] in ("qr", "known", "crossref", "allowed") and not u.get("flag"))
     chars = rec.get("text_chars") or 0
     conf = rec.get("ocr_confidence") or 0.0
     px = (rec.get("width") or 0) * (rec.get("height") or 0)

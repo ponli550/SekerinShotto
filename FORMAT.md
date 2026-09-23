@@ -5,7 +5,7 @@ vault wrapper manages an Obsidian vault. Neither imports the other. They meet
 only at the files and the JSON described here. Any future ingester (PDF, web
 clip, …) that writes this format plugs into the same wrapper.
 
-Status: draft v0.11.0 — 2026-09-23.
+Status: draft v0.12.0 — 2026-09-23.
 
 ## 1. CLI contract (both tools)
 
@@ -72,7 +72,7 @@ Rules:
 - `source_state`: `present` | `held` | `attached` | `quarantined` | `purged`. After `purged`, the note is the only record.
 - Quarantine lasts exactly 7 days to the second: `purge_after = quarantined_at + 604800 s`, UTC, ISO 8601 with seconds. Purge is eligible only when `now >= purge_after`; it still needs `--commit`.
 - `held`: the image failed the confidence gate. It is kept, never quarantined, and its clock has not started. It becomes eligible only after its confidence is raised or it is confirmed (see §6).
-- `decided_by`: `rule` | `laya` | `llm` | `user`. `verified_by`: `qr` | `crossref` | `known` | `none`
+- `decided_by`: `rule` | `laya` | `llm` | `user`. `verified_by`: `qr` | `crossref` | `known` | `allowed` | `none`
   (`reocr` and `dns` reserved). URL records may also carry `corrected`, `reason`, `joined` (extra lines
   merged) and `flag`: `truncated` | `invalid_tld` | `invalid_host`.
 - Secrets (Wi-Fi passwords) are redacted before this file is written: `"payload": "WIFI:S:home;T:WPA;P:<redacted>"`.
@@ -116,7 +116,7 @@ Anything here is owned by the user and never touched by any tool.
 ```
 
 URL rendering rule:
-- Links are made only for `qr`, `crossref` and `known` URLs without a flag. Everything else is code text,
+- Links are made only for `qr`, `crossref`, `known` and `allowed` URLs without a flag. Everything else is code text,
   and sits in `urls_unverified` without a scheme so neither the reading view nor the Properties panel
   makes it clickable.
 - A corrected URL is a link to the correction, with the raw reading and the reason beside it, and is
@@ -138,6 +138,19 @@ URL correction (deterministic, offline after `domains update`):
   within 1.5 line heights, is a single URL-shaped token (not a word, a date, or a new URL).
 - Measured on the 182-screenshot sample: 8 corrections, 0 wrong; 2 wrapped URLs fully recovered;
   2 cut-off URLs flagged. Not recoverable: paths faded out by the browser, and OCR misreads inside a path.
+
+Personal allowlist (`<state>/domains/allow.txt`), for real sites too small for the Tranco top 1M:
+- `domains suggest` ranks unverified OCR domains by how many held images they would release.
+- `domains allow D[,D…] --commit` stores registrable domains (Public Suffix List eTLD+1, so
+  `27a.onrender.com` vouches for that app only, not all of onrender.com). Refused without the PSL,
+  for public suffixes (`com.my`), and for TLDs that do not exist.
+- An allowed domain verifies OCR URLs (`verified_by: allowed`, linked) and is evidence for correcting a
+  lookalike (`hackfest2O26.my` → `hackfest2026.my`).
+- Allowing and `domains update` re-verify every stored URL without reading an image, rewrite the notes
+  that changed, and release held images whose last unverified URL is now covered.
+- `domains unallow` reverts those URLs to `none`; images already quarantined or purged stay where they are.
+- Measured on the sample: allowing 8 suggested domains released 9 of 11 held images (7 quarantined,
+  2 attached); the 2 left are the domains deliberately not allowed.
 
 Reference lists: `domains update --commit` downloads Tranco top-1M, the Public Suffix List and the IANA TLD
 list into `<state>/domains/`. It is the tool's only network access and fetches reference lists only,
