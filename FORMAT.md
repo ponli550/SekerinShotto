@@ -5,7 +5,7 @@ vault wrapper manages an Obsidian vault. Neither imports the other. They meet
 only at the files and the JSON described here. Any future ingester (PDF, web
 clip, …) that writes this format plugs into the same wrapper.
 
-Status: draft v0.28.0 — 2026-09-25.
+Status: draft v0.29.0 — 2026-09-25.
 
 ## 1. CLI contract (both tools)
 
@@ -78,6 +78,9 @@ Rules:
 - Secrets (Wi-Fi passwords) are redacted before this file is written: `"payload": "WIFI:S:home;T:WPA;P:<redacted>"`.
 - Credentials in OCR text, QR payloads and URLs are replaced at extraction by `[SECRET:<kind>]` (see 7a);
   the record lists the kinds in `secrets`.
+- `code`: `null`, or `{lang, score, why, imports, code_lines}` for a code screenshot (§6c). The note's
+  frontmatter carries `code_language` and `code_imports`, the tag `code/<lang>`, and its Text block is
+  fenced with the language (```` ```python ````) instead of `text`.
 - Unknown fields must be ignored by readers, never rejected.
 
 ## 3. Note file
@@ -298,7 +301,7 @@ unverified URLs); with the clock pinned 1 s before the deadline 0 were due, at t
 
 ## 6a. Classification, duplicate groups, ranking
 
-Categories (built-in rules, first match wins): content first — `payment`, `event` (needs a keyword and a
+Categories (built-in rules, first match wins): `code` (§6c), then content — `payment`, `event` (needs a keyword and a
 date), `form`, `learning`, `health`, `shopping` — then by app — `travel`, `game`, `chat`, `email`, `social`,
 `document`, `system`, `web` — else `uncategorized`. Every note records the rule's reason, e.g.
 `text 'Pendaftaran'; and '20 DECEMBER'`. English and Malay keywords.
@@ -333,6 +336,31 @@ Measured on the 182-screenshot sample: 6 uncategorized (3 %); 5 groups, 12 scree
 visual check (a re-screenshot in the gallery, a toast-only change, a certificate in a viewer vs a crop, a
 document page vs a crop of one section, one calendar shown four ways). Two fresh runs produce identical
 categories, group ids and files.
+
+## 6c. Code screenshots (implemented, extractor v11)
+
+- **Is it code.** At least 40% of non-blank lines must look like code (end in a bracket, colon or
+  semicolon; contain `=`, `=>`, `:=`, `->`, `&&`; start with a comment or a keyword), AND one language's
+  weighted signatures must score at least 5. On the 203-item trial: 0 false positives; the nearest miss
+  was a chat scoring 4 on SQL-like prose ("select … from") with 30% code-like lines.
+- **Languages:** python, go, typescript, javascript, rust, java, kotlin, swift, c, cpp, csharp, php, ruby,
+  sql, shell, dockerfile, yaml, json, html, css. TypeScript needs TypeScript-only evidence (types,
+  interfaces), then JavaScript evidence counts for it; C evidence counts for C++.
+- **Stack:** `imports` lists imported packages in file order (Python `from x`/`import x`, Go import paths,
+  JS/TS `from`/`require`, Rust `use`, Java/Kotlin packages, Swift, C/C++ headers, C# `using`, PHP, Ruby).
+- **Raw read.** When the first read is code, the image is read again with Vision language correction
+  off (correction turns identifiers into words). The second read is kept if it is still code.
+- **Layout.** Observations whose vertical centres overlap are one row; gaps inside a row become spaces.
+  Indentation = offset from the leftmost row start in median character widths, snapped to the indent
+  unit (4 when 70% of indents fit, else 2). An IDE line-number gutter (climbing numbers as separate
+  observations on 60% of rows) is dropped. Ligature glyphs are mapped back (`→` `->`, `⇒` `=>`, `≠` `!=`,
+  `≤` `≥`, smart quotes) and `name (` becomes `name(` except after keywords (`if (`, `return (`).
+- **Category.** The built-in rule `code` (condition `code_langs = ["*"]`, plus terminal/IDE apps) comes
+  first, so a snippet mentioning "python" or "api" is `code`, not `learning`. Rules may name languages.
+- **Known gaps.** Vision drops some lines holding only a closing bracket (`}`, `)`); the note does not
+  invent them. `{` read as `f` and backticks read as quotes are not repaired. Proportional fonts make
+  indentation approximate. Measured on Menlo renders: Python 7/8 lines exact, Go and TypeScript exact
+  except one dropped closing-bracket line each.
 
 ## 6b. Scroll sequences
 

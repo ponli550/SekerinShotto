@@ -362,7 +362,7 @@ VIBRANT = {
 CATEGORY_COLOURS = {
     "event": "orange", "payment": "green", "chat": "cyan", "social": "pink", "web": "blue", "learning": "purple",
     "health": "red", "shopping": "yellow", "form": "teal", "document": "lime", "email": "gold", "game": "coral",
-    "travel": "sky", "security": "red",
+    "travel": "sky", "security": "red", "code": "violet",
 }
 
 

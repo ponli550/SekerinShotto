@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
-EXTRACTOR_VERSION = "10"
+EXTRACTOR_VERSION = "11"
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".heic", ".webp", ".tif", ".tiff", ".bmp", ".gif"}
 
 FAIL_MIN_CHARS = 3            # fewer chars and no barcode -> failed/no_text
@@ -381,6 +381,7 @@ class Extraction:
     confirmed_by: str | None = None
     copies: list = field(default_factory=list)        # byte-identical files elsewhere: {path, state, ...}
     secrets: list = field(default_factory=list)       # kinds of credentials scrubbed at extraction
+    code: dict | None = None                          # {lang, score, why, imports, code_lines} when code (code.py)
     chrome_top_n: int = 0                             # OCR lines in the status-bar strip (reading order: first)
     chrome_bottom_n: int = 0                          # OCR lines in the gesture-bar strip (last)
     elapsed_ms: int = 0
@@ -421,7 +422,7 @@ def _frameworks():
     return _FW
 
 
-def _vision_read(path: Path):
+def _vision_read(path: Path, correction: bool = True, barcodes: bool = True):
     fw = _frameworks()
     src = fw["src"](fw["url"](str(path)), None)
     if src is None:
@@ -431,11 +432,12 @@ def _vision_read(path: Path):
         raise ValueError("not a readable image")
     text_req = fw["TextReq"].alloc().init()
     text_req.setRecognitionLevel_(fw["accurate"])
-    text_req.setUsesLanguageCorrection_(True)
+    # Language correction turns `uid` into `aid` and `:=` into `=`: code is re-read without it.
+    text_req.setUsesLanguageCorrection_(correction)
     text_req.setRecognitionLanguages_(["en-US", "ms-MY"])
     bar_req = fw["BarReq"].alloc().init()
     handler = fw["Handler"].alloc().initWithCGImage_options_(img, None)
-    ok, err = handler.performRequests_error_([text_req, bar_req], None)
+    ok, err = handler.performRequests_error_([text_req, bar_req] if barcodes else [text_req], None)
     if not ok:
         raise RuntimeError(f"Vision failed: {err}")
     lines = []
@@ -447,7 +449,7 @@ def _vision_read(path: Path):
             lines.append((str(cand[0].string()), float(cand[0].confidence()), box))
     lines.sort(key=lambda t: (round(t[2][1], 3), t[2][0]))      # reading order: top, then left
     bars = []
-    for obs in bar_req.results() or []:
+    for obs in (bar_req.results() or []) if barcodes else []:
         payload = obs.payloadStringValue()
         bars.append({"symbology": str(obs.symbology()).replace("VNBarcodeSymbology", ""),
                      "payload": str(payload) if payload is not None else None})
@@ -486,6 +488,15 @@ def _extract(path: Path, file_id: str | None = None) -> Extraction:
         ex.status, ex.status_reason = "failed", f"unreadable: {e}"
         ex.elapsed_ms = int((time.perf_counter() - t0) * 1000)
         return ex
+    from .code import detect, rebuild
+    if detect(ex.text):
+        # Code: re-read without language correction and rebuild each row with its on-screen indentation.
+        raw = rebuild(_vision_read(path, correction=False, barcodes=False)[2])
+        ex.code = detect("\n".join(t[0] for t in raw))
+        if ex.code:
+            ex.lines = raw
+        else:
+            ex.code = detect(ex.text)                  # the uncorrected read lost it: keep the first reading
     undecoded = [b for b in bars if b["payload"] is None]
     decoded = [b for b in bars if b["payload"]]
     if not decoded:

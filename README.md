@@ -48,6 +48,10 @@ API keys, tokens, private keys and `password=` style values in screenshots of co
 terminals are replaced by `[SECRET:<kind>]` at extraction, before anything is written, and such images are
 never kept. `secrets scrub --commit` cleans notes written before this existed.
 
+Screenshots of code go to `notes/code/`, with the language detected (Python, Go, TypeScript, JavaScript,
+Rust, Java, SQL, shell and more), the imported packages listed as `code_imports`, and the text re-read
+without autocorrect, indented as on screen and fenced as ```` ```python ````.
+
 State (index, manifests, signed journal) lives in `~/.local/share/sekerinshotto/`, outside any vault and
 never in a synced folder. Rerunning `ingest` skips images already extracted with the current extractor.
 

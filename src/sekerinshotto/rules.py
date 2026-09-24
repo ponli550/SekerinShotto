@@ -23,10 +23,16 @@ class Rule:
     text: list[re.Pattern] = field(default_factory=list)
     text_min: int = 1
     also: list[re.Pattern] = field(default_factory=list)
+    code_langs: list[str] = field(default_factory=list)   # detected code language; "*" is any
 
-    def match(self, app: str | None, qr_types: set[str], domains: list[str], text: str) -> str | None:
+    def match(self, app: str | None, qr_types: set[str], domains: list[str], text: str,
+              code: dict | None = None) -> str | None:
         """The reason this rule matched, or None."""
         checks = []
+        if self.code_langs:
+            lang = (code or {}).get("lang")
+            hit = lang and ("*" in self.code_langs or lang in self.code_langs)
+            checks.append(f"code {lang} ({', '.join(repr(w) for w in (code.get('why') or [])[:2])})" if hit else None)
         if self.apps:
             hit = next((p for p in self.apps if app and app.startswith(p)), None)
             checks.append(f"app {app}" if hit else None)
@@ -67,7 +73,8 @@ def _compile(raw: dict, src: str) -> list[Rule]:
                 category=cat, mode=r.get("mode", "any"), apps=list(r.get("apps", [])),
                 qr_types=list(r.get("qr_types", [])), domains=[d.lower() for d in r.get("domains", [])],
                 text=[re.compile(x, re.I) for x in r.get("text", [])], text_min=int(r.get("text_min", 1)),
-                also=[re.compile(x, re.I) for x in r.get("also", [])]))
+                also=[re.compile(x, re.I) for x in r.get("also", [])],
+                code_langs=list(r.get("code_langs", []))))
         except re.error as e:
             raise ToolError(f"{src}: rule {i} ({cat}) has a bad regex: {e}")
     return rules
@@ -84,9 +91,10 @@ def load(state_root: Path) -> tuple[list[Rule], str]:
     return _compile(tomllib.loads(text), "built-in rules"), "built-in"
 
 
-def classify(rules: list[Rule], app: str | None, qr_types: set[str], domains: list[str], text: str) -> tuple[str, str]:
+def classify(rules: list[Rule], app: str | None, qr_types: set[str], domains: list[str], text: str,
+             code: dict | None = None) -> tuple[str, str]:
     for r in rules:
-        why = r.match(app, qr_types, domains, text)
+        why = r.match(app, qr_types, domains, text, code)
         if why:
             return r.category, why
     return UNCATEGORIZED, "no rule matched"

@@ -7,8 +7,16 @@
 #   qr_types  QR types present                  ["payment", "wifi"]
 #   domains   registrable domains of any URL    ["docs.google.com", "forms.gle"]  (suffix match)
 #   text      regexes; `text_min` distinct ones must match (default 1)
+#   code_langs  the language detected in a code screenshot ["python", "go"]; "*" is any
 # and then every regex in `also` must match too (e.g. an event needs a date).
 # Text is matched case-insensitively against the OCR text.
+
+# Code first: a snippet that mentions "python" or "api" is code, not a learning screenshot.
+[[rule]]
+category = "code"
+mode = "any"
+code_langs = ["*"]
+apps = ["com.termux", "com.github.android", "io.spck", "ru.iiec.pydroid3", "com.aide.ui", "com.foxdebug.acode"]
 
 [[rule]]
 category = "payment"
