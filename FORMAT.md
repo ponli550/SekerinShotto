@@ -5,7 +5,7 @@ vault wrapper manages an Obsidian vault. Neither imports the other. They meet
 only at the files and the JSON described here. Any future ingester (PDF, web
 clip, …) that writes this format plugs into the same wrapper.
 
-Status: draft v0.27.0 — 2026-09-23.
+Status: draft v0.28.0 — 2026-09-25.
 
 ## 1. CLI contract (both tools)
 
@@ -76,6 +76,8 @@ Rules:
   (`reocr` and `dns` reserved). URL records may also carry `corrected`, `reason`, `joined` (extra lines
   merged) and `flag`: `truncated` | `invalid_tld` | `invalid_host`.
 - Secrets (Wi-Fi passwords) are redacted before this file is written: `"payload": "WIFI:S:home;T:WPA;P:<redacted>"`.
+- Credentials in OCR text, QR payloads and URLs are replaced at extraction by `[SECRET:<kind>]` (see 7a);
+  the record lists the kinds in `secrets`.
 - Unknown fields must be ignored by readers, never rejected.
 
 ## 3. Note file
@@ -393,6 +395,21 @@ took 12 s; the same question again came from cache in 0 s). Raw long text was ~1
   phone, email, IC, street or postcode+state lines. Known gaps: a bare name with no cue, an all-lowercase
   name in a chat, an address with no cue, street word or postcode.
 - Wi-Fi QR passwords are redacted before anything is written, everywhere.
+- Credentials are scrubbed at EXTRACTION, before any note, manifest or index row exists (extractor v10),
+  unlike personal data, which is redacted only at the LLM boundary. Kinds: `private-key` (BEGIN…END
+  block), `anthropic` (`sk-ant-`), `openai` (`sk-`, `sk-proj-`), `aws-access-key` (`AKIA`/`ASIA`…+16),
+  `github` (`ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_`, `github_pat_`), `slack` (`xox[abprs]-`), `google-api`
+  (`AIza`+35), `stripe` (`sk_live_`/`rk_test_`…), `jwt` (three `eyJ`-style segments), `url-password`
+  (`scheme://user:pass@`), and `assigned`: a value of 6+ characters after a name containing password,
+  secret, token, api key, access key, client secret, private key or auth, with `=` or `:`. The name stays
+  (`DB_PASSWORD="[SECRET:assigned]"`); placeholders (`****`, `${VAR}`, `<your-token>`, `changeme`) and
+  unquoted code (`token = self.token`, `tokens = tokenize(text)`) are left alone.
+- An image with secrets is never kept as an attachment, even with `keep`: cleanup quarantines it (purged
+  after 7 days). Its note's Source section and `AUDIT.md` ("Secrets removed") say to rotate the key.
+- `secrets scrub [--commit]` cleans items extracted before v10: index text, QR payloads, URLs and batch
+  manifests are scrubbed in place, notes regenerated, images quarantined. Idempotent.
+- Known gap: a secret OCR misreads (a key split across lines, a confused character in the prefix) is not
+  recognised. The image is still quarantined only if some secret was found.
 - Redaction is a boundary, not a vault guarantee: an LLM that reads the note files directly sees full text.
 
 Commands:

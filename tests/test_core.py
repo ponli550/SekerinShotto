@@ -1164,3 +1164,61 @@ def test_home_menu_is_lean_and_jobs_are_reachable():
         assert verb in jobs
     assert "schedule log --job {row}" in jobs and "\tout-side\t" in jobs
     assert any(l.startswith("h\t") for l in pv.keys_for("ss-audit").splitlines())   # sub-panels keep home
+
+
+# ---------------------------------------------------------------- secrets
+# Fake keys are assembled at runtime so no secret-shaped literal sits in the repository.
+_AWS = "AKIA" + "IOSFODNN7EXAMPLE"
+_GH = "ghp" + "_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+
+
+@pytest.mark.parametrize("text,kind", [
+    ('OPENAI_KEY = "sk-' + 'proj-9fK2xQ7LmZabc"', "openai"),
+    ("key sk-" + "ant-api03-abcdefghijkl", "anthropic"),
+    (f"aws_id={_AWS}", "aws-access-key"),
+    (f"git remote https://{_GH}@github.com/x/y", "github"),
+    ("xox" + "b-1234567890-abcdefghij", "slack"),
+    ("Bearer eyJ" + "hbGciOiJIUzI1.eyJ" + "zdWIiOiIxMjM0.SflKxwRJSMeKKF2QT4", "jwt"),
+    ("postgres://admin:hunter22@db.local/app", "url-password"),
+    ("-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----", "private-key"),
+])
+def test_scrub_known_formats(text, kind):
+    from sekerinshotto.secrets import scrub
+    out, kinds = scrub(text)
+    assert kind in kinds and f"[SECRET:{kind}]" in out
+    assert scrub(out) == (out, [])                                     # idempotent
+
+
+def test_scrub_assignments_keep_the_name_and_skip_placeholders():
+    from sekerinshotto.secrets import scrub
+    out, kinds = scrub('DB_PASSWORD="s3cr3tvalue"')
+    assert out == 'DB_PASSWORD="[SECRET:assigned]"' and kinds == ["assigned"]
+    for benign in ('password = "********"', "API_KEY=${API_KEY}", "token: <your-token>", "password: changeme",
+                   "Forgot password? Reset it here", "tokens = tokenize(text)"):
+        assert scrub(benign) == (benign, []), benign
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Apple Vision")
+def test_secrets_scrubbed_before_writing_and_image_not_kept(tmp_path):
+    import os
+    img = Image.new("RGB", (1400, 500), "white")
+    d = ImageDraw.Draw(img)
+    font = ImageFont.load_default(size=44)
+    d.text((40, 60), "import boto3", fill="black", font=font)
+    d.text((40, 160), f'AWS_ID = "{_AWS}"', fill="black", font=font)
+    src = tmp_path / "in"
+    src.mkdir()
+    img.save(src / "code.png")
+    env = {**os.environ, "SEKERINSHOTTO_STATE": str(tmp_path / "state")}
+    content = tmp_path / "content"
+    code, res = _run("ingest", str(src), "--content", str(content), "--commit", env=env)
+    assert code in (0, 2), res
+    note = next((content / "notes").rglob("*.md")).read_text()
+    assert _AWS not in note and "[SECRET:aws-access-key]" in note and "rotate" in note
+    for f in (tmp_path / "state").rglob("*"):
+        if f.is_file() and f.suffix in (".jsonl", ".json", ".md", ".db", ".sqlite"):
+            assert _AWS.encode() not in f.read_bytes(), f
+    _, lst = _run("list", env=env)
+    assert all(i.get("source_state") != "present" or not i.get("attachment") for i in lst["data"].get("items", []))
+    code, plan = _run("secrets", "scrub", env=env)
+    assert plan["data"]["items"] == []                                 # nothing left to scrub

@@ -44,6 +44,10 @@ After extraction the images themselves are not kept: `cleanup` quarantines them 
 not be read reliably are held and retried. You never review images; `AUDIT.md` lists what was held and why.
 `restore` brings a quarantined image back; `keep` saves a diagram the visual rule missed.
 
+API keys, tokens, private keys and `password=` style values in screenshots of code, `.env` files or
+terminals are replaced by `[SECRET:<kind>]` at extraction, before anything is written, and such images are
+never kept. `secrets scrub --commit` cleans notes written before this existed.
+
 State (index, manifests, signed journal) lives in `~/.local/share/sekerinshotto/`, outside any vault and
 never in a synced folder. Rerunning `ingest` skips images already extracted with the current extractor.
 

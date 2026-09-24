@@ -1937,3 +1937,52 @@ for _name, _summary in (("run", "Run a scheduled job now"), ("pause", "Pause a s
         return lambda a, state: _job_ctl(a, state, action)
     command(f"schedule {_name}", _summary, args=[Arg("--job", "watch or purge", required=True)],
             writes=True)(_mk(_name))
+
+
+# ---------------------------------------------------------------- secrets
+@command("secrets scrub", "Remove credentials from notes, the index and batch manifests already written",
+         writes=True,
+         details="New ingests scrub secrets at extraction. This cleans items extracted before that: OCR text, "
+                 "QR payloads and URLs are scrubbed in the index, their notes are regenerated, batch manifests "
+                 "are rewritten in place, and cleanup sends the images to quarantine (never kept as attachments).")
+def cmd_secrets_scrub(a, state: State):
+    from .secrets import scrub
+    content = _content_root(state, None, required=True)
+    con = state.connect()
+    found = []
+    for rec in _records(con):
+        text, kinds = scrub(_text(con, rec["id"]))
+        ents = json.loads(json.dumps(rec["entities"]))
+        for q in ents.get("qr") or []:
+            if q.get("payload"):
+                q["payload"], k = scrub(q["payload"]); kinds += k
+        for u in ents.get("urls") or []:
+            for key in ("url", "raw"):
+                if u.get(key):
+                    u[key], k = scrub(u[key]); kinds += k
+        if kinds:
+            found.append((rec, text, ents, kinds))
+    items = [{"id": r["id"], "note": r.get("note_path"), "kinds": sorted(set(k))} for r, _, _, k in found]
+    manifests = []
+    for mf in sorted(state.dir("batches").glob("*.jsonl")):
+        raw = mf.read_text()
+        if scrub(raw)[1]:
+            manifests.append(mf)
+    if not a.commit:
+        return Result({"committed": False, "items": items, "manifests": [m.name for m in manifests]})
+    batch_id = now_iso().replace(":", "-") + "-secrets"
+    with state.lock():
+        for rec, text, ents, kinds in found:
+            rec = {**rec, "entities": ents, "secrets": sorted(set((rec.get("secrets") or []) + kinds))}
+            _index(con, rec, text, now_iso())
+        con.commit()
+        for mf in manifests:                           # history files: rewrite atomically, same records
+            tmp = mf.with_suffix(".tmp")
+            tmp.write_text(scrub(mf.read_text())[0])
+            tmp.replace(mf)
+        ids = {r["id"] for r, *_ in found}
+        rer = _rerender(state, con, content, state.journal(batch_id), batch_id, ids)
+        con.commit()
+        res = run_cleanup(state, con, content, True, batch_id, only=ids) if ids else {"moved": {}}
+    return Result({"committed": True, "items": items, "manifests": [m.name for m in manifests],
+                   "notes_rewritten": rer["notes_written"], "cleanup": res.get("moved")})
