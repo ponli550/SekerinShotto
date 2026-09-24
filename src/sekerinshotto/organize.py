@@ -119,7 +119,8 @@ def organize(items: dict[str, dict], rules, content: Path, stopterms: set[str] =
                 why = f"set by {by}" + (f", quoting {ev!r}" if ev else "")
         if cat is None:
             qr_types = {b["type"] for b in rec["entities"]["qr"]}
-            cat, why = classify(rules, rec.get("source_app"), qr_types, rec["entities"]["domains"], rec.get("_text", ""))
+            cat, why = classify(rules, rec.get("source_app"), qr_types, rec["entities"]["domains"], rec.get("_text", ""),
+                                 rec.get("code"))
             by = "rule" if cat != "uncategorized" else None
         sc, sc_why = score(rec)
         out[iid] = {"category": cat, "decided_by": by, "why": why, "group": None, "rank": None,

@@ -15,7 +15,7 @@ USER_TAIL = "\n\n## Notes\n\n"
 OWNED_KEYS = ["id", "ingester", "ingester_version", "source_type", "source_app", "captured_at",
               "ingested", "status", "status_reason", "category", "decided_by", "urls", "urls_unverified", "urls_corrected", "domains",
               "qr", "group", "rank", "group_size", "members", "source_state", "purge_after", "decided_evidence", "terms", "sequence", "seq_part", "seq_size",
-              "tags"]
+              "code_language", "code_imports", "tags"]
 WRITEBACK_KEYS = ("category", "decided_by", "decided_evidence")   # kept when a caller decided them
 WRITEBACK_BY = ("llm", "user", "laya")
 _SKIP_PKG = {"com", "org", "net", "my", "io", "co", "app", "android", "apple"}
@@ -92,9 +92,9 @@ def _block_value(raw: str):
         return val.strip("'\"")
 
 
-def _fence(text: str) -> str:
+def _fence(text: str, lang: str = "text") -> str:
     f = "~~~~" if "```" in text else "```"
-    return f"{f}text\n{text}\n{f}"
+    return f"{f}{lang}\n{text}\n{f}"
 
 
 def _linkable(u: dict) -> bool:
@@ -105,7 +105,7 @@ def generated_body(ex: Extraction, org: dict | None = None) -> str:
     out = [START]
     if ex.attachment:
         out.append(f"![[{ex.attachment}]]")                  # visual: the image is the content
-    out += ["## Text", _fence(ex.text) if ex.text.strip() else "_no text read_"]
+    out += ["## Text", _fence(ex.text, (ex.code or {}).get("lang", "text")) if ex.text.strip() else "_no text read_"]
     if ex.urls:
         out.append("## Links")
         for u in ex.urls:
@@ -185,9 +185,11 @@ def render(ex: Extraction, ingested: str, existing: str | None = None, org: dict
         "urls_corrected": [f"{u['raw']} -> {u['url']}" for u in ex.urls if u.get("corrected")],
         "domains": ex.domains,
         "qr": sorted({b["type"] for b in ex.barcodes}),
+        "code_language": (ex.code or {}).get("lang"), "code_imports": (ex.code or {}).get("imports") or [],
         "source_state": ex.source_state, "purge_after": ex.purge_after,
         "tags": ["sekerinshotto"] + ([f"sekerinshotto/{ex.status}"] if ex.status != "ok" else [])
-                + ([f"sekerinshotto/{ex.source_state}"] if ex.source_state in ("held", "attached") else []),
+                + ([f"sekerinshotto/{ex.source_state}"] if ex.source_state in ("held", "attached") else [])
+                + ([f"code/{ex.code['lang']}"] if ex.code else []),
     }
     foreign: list[str] = []
     user_part = USER_TAIL
@@ -208,7 +210,7 @@ def render(ex: Extraction, ingested: str, existing: str | None = None, org: dict
 
 def text_from_note(text: str) -> str:
     """Recover the OCR text block from a note (used by reindex)."""
-    m = re.search(r"## Text\n\n(```|~~~~)text\n(.*?)\n\1", text, re.S)
+    m = re.search(r"## Text\n\n(```|~~~~)[a-z0-9+#-]*\n(.*?)\n\1", text, re.S)
     return m.group(2) if m else ""
 
 
@@ -226,6 +228,7 @@ def manifest_record(ex: Extraction, batch_id: str, note_path: str, source_state:
         "sequence": org.get("sequence"), "seq_part": org.get("seq_part"), "seq_size": org.get("seq_size"),
         "status": ex.status, "status_reason": ex.status_reason,
         "entities": {"qr": ex.barcodes, "urls": ex.urls, "domains": ex.domains},
+        "code": ex.code,
         "text_chars": len(ex.text), "ocr_confidence": ex.ocr_confidence,
         "width": ex.width, "height": ex.height, "bytes": ex.bytes,
         "sig": ex.sig, "toks": ex.toks, "dhash": ex.dhash, "content_tokens": ex.content_tokens,
@@ -254,6 +257,7 @@ def extraction_from_record(rec: dict, text: str) -> Extraction:
     ex.lines = [(t, 1.0) for t in text.splitlines()]
     ex.barcodes = rec["entities"]["qr"]
     ex.urls = rec["entities"]["urls"]
+    ex.code = rec.get("code")
     ex.status, ex.status_reason = rec["status"], rec.get("status_reason")
     ex.ocr_confidence = rec.get("ocr_confidence")
     ex.sig, ex.dhash, ex.content_tokens = rec.get("sig") or [], rec.get("dhash"), rec.get("content_tokens") or 0

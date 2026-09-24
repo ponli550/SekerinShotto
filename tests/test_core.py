@@ -1222,3 +1222,106 @@ def test_secrets_scrubbed_before_writing_and_image_not_kept(tmp_path):
     assert all(i.get("source_state") != "present" or not i.get("attachment") for i in lst["data"].get("items", []))
     code, plan = _run("secrets", "scrub", env=env)
     assert plan["data"]["items"] == []                                 # nothing left to scrub
+
+
+# ---------------------------------------------------------------- code screenshots
+CODE_SNIPPETS = {
+    "python": 'import os\nfrom fastapi import FastAPI\n\n@app.get("/u")\ndef get_user(uid: int) -> dict:\n'
+              '    if uid < 0:\n        raise ValueError("bad")\n    return {"id": uid}',
+    "go": 'package main\n\nimport (\n    "fmt"\n    "github.com/gin-gonic/gin"\n)\n\nfunc main() {\n'
+          '    r := gin.Default()\n    if err := r.Run(); err != nil {\n        fmt.Println(err)\n    }\n}',
+    "typescript": 'import express from "express";\n\ninterface User {\n  id: number;\n  name: string;\n}\n\n'
+                  'export function greet(u: User): string {\n  return u.name;\n}',
+    "javascript": 'const express = require("express");\nconst app = express();\n\n'
+                  'app.get("/", (req, res) => {\n  console.log(req.url);\n  res.send("ok");\n});',
+    "rust": 'use std::collections::HashMap;\n\nfn main() {\n    let mut m = HashMap::new();\n'
+            '    m.insert("a", 1);\n    println!("{:?}", m);\n}',
+    "java": 'import java.util.List;\n\npublic class App {\n    @Override\n'
+            '    public String toString() {\n        System.out.println("x");\n        return "app";\n    }\n}',
+    "sql": "SELECT u.id, u.name\nFROM users u\nLEFT JOIN orders o ON o.user_id = u.id\nWHERE u.active = 1\nORDER BY u.name;",
+    "shell": "$ brew install uv\n$ uv sync --locked\n$ git push origin main && echo done",
+    "cpp": "#include <iostream>\n#include <vector>\n\nint main() {\n    std::vector<int> v;\n"
+           "    std::cout << v.size();\n    return 0;\n}",
+}
+
+
+@pytest.mark.parametrize("lang", sorted(CODE_SNIPPETS))
+def test_code_language_detected(lang):
+    from sekerinshotto.code import detect
+    got = detect(CODE_SNIPPETS[lang])
+    assert got and got["lang"] == lang, got
+
+
+def test_code_imports_are_the_stack():
+    from sekerinshotto.code import detect
+    assert detect(CODE_SNIPPETS["python"])["imports"] == ["os", "fastapi"]
+    assert detect(CODE_SNIPPETS["go"])["imports"] == ["fmt", "github.com/gin-gonic/gin"]
+    assert detect(CODE_SNIPPETS["typescript"])["imports"] == ["express"]
+
+
+@pytest.mark.parametrize("text", [
+    "Hi Aina, can you select a date from the calendar?\nSure, I'll import the photos tonight.\nThanks!",
+    "Payment successful\nReference No: 12345\nAmount: RM 25.00\nTo: KEDAI RUNCIT",
+    "Workshop: Intro to Python\nDate: 12 Oct\nVenue: Dewan Utama\nRegister now",
+    "def",
+])
+def test_prose_is_not_code(text):
+    from sekerinshotto.code import detect
+    assert detect(text) is None
+
+
+def test_rebuild_indentation_rows_and_gutter():
+    from sekerinshotto.code import rebuild
+    cw, lh = 0.01, 0.03                                   # char width and line height, normalized
+    def ob(t, col, row, gutter=False):
+        return (t, 0.99, (0.05 + col * cw, 0.1 + row * lh, len(t) * cw, lh * 0.8))
+    obs = [ob("1", -4, 0), ob("def f(x) :", 0, 0), ob("2", -4, 1), ob("if x:", 4.3, 1),
+           ob("3", -4, 2), ob("return x", 7.8, 2), ob("# done", 20, 2), ob("4", -4, 3), ob("print (f(1))", 0, 3)]
+    got = [t for t, _c, _b in rebuild(obs)]
+    assert got == ["def f(x) :", "    if x:", "        return x    # done", "print(f(1))"]
+
+
+def test_normalize_glyphs_and_call_space():
+    from sekerinshotto.code import normalize
+    assert normalize("def f(a) → dict:") == "def f(a) -> dict:"
+    assert normalize("def f(a) →> dict:") == normalize("def f(a) -→ dict:") == "def f(a) -> dict:"
+    assert normalize("x = FastAPI ()") == "x = FastAPI()"
+    assert normalize("if (x ≠ y) return (a)") == "if (x != y) return (a)"
+
+
+def test_code_rule_wins_over_learning():
+    from sekerinshotto.rules import classify, load
+    rules, _ = load(Path("/nonexistent"))
+    code = {"lang": "python", "why": ["def get_user(uid: int) -> dict:"]}
+    cat, why = classify(rules, None, set(), [], "python api model training", code)
+    assert cat == "code" and why.startswith("code python")
+    assert classify(rules, None, set(), [], "python api model training")[0] == "learning"
+
+
+def _menlo():
+    try:
+        return ImageFont.truetype("/System/Library/Fonts/Menlo.ttc", 30)
+    except OSError:
+        pytest.skip("Menlo not installed")
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Apple Vision")
+def test_code_screenshot_note(tmp_path):
+    import os
+    font, src = _menlo(), CODE_SNIPPETS["python"]
+    img = Image.new("RGB", (1300, 60 + 44 * len(src.splitlines())), "#1e1e1e")
+    d = ImageDraw.Draw(img)
+    for i, line in enumerate(src.splitlines()):
+        d.text((40, 30 + 44 * i), line, fill="#d4d4d4", font=font)
+    (tmp_path / "in").mkdir()
+    img.save(tmp_path / "in" / "snippet.png")
+    env = {**os.environ, "SEKERINSHOTTO_STATE": str(tmp_path / "state")}
+    code, res = _run("ingest", str(tmp_path / "in"), "--content", str(tmp_path / "content"), "--commit", env=env)
+    assert code in (0, 2), res
+    notes = list((tmp_path / "content" / "notes" / "code").glob("*.md"))
+    assert len(notes) == 1, list((tmp_path / "content").rglob("*.md"))
+    note = notes[0].read_text()
+    assert 'code_language: "python"' in note and "fastapi" in note and "code/python" in note
+    body = note.split("```python\n", 1)[1].split("\n```", 1)[0].splitlines()
+    assert "def get_user(uid: int) -> dict:" in body            # no language correction, no → glyph
+    assert "    if uid < 0:" in body and "        raise ValueError(\"bad\")" in body
