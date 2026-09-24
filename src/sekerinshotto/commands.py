@@ -1631,9 +1631,22 @@ def cmd_autoadd(a, state: State):
     if not folder.is_dir():
         raise ToolError(f"{folder} is not a folder")
     content = _content_root(state, None, required=True)
-    now = time.time()
-    cands = [p for p in sorted(folder.iterdir()) if p.is_file() and p.suffix.lower() in IMAGE_EXTS
-             and not p.name.startswith(".") and _photo_named(p) and now - p.stat().st_mtime >= a.settle]
+    def photo_files():
+        return [p for p in sorted(folder.iterdir()) if p.is_file() and p.suffix.lower() in IMAGE_EXTS
+                and not p.name.startswith(".") and _photo_named(p)]
+
+    # A Taildrop/AirDrop batch keeps writing for a moment after the watch trigger fires. Files still
+    # settling are waited out (up to 30 s) instead of skipped, or the last photos of a batch would sit in
+    # the folder until the next unrelated change there.
+    deadline = time.time() + (30 if a.commit else 0)
+    while True:
+        now = time.time()
+        files = photo_files()
+        settling = [p for p in files if now - p.stat().st_mtime < a.settle]
+        if not settling or now >= deadline:
+            break
+        time.sleep(min(a.settle, max(0.5, deadline - now)))
+    cands = [p for p in files if time.time() - p.stat().st_mtime >= a.settle]
     con = state.connect()
     known = {r[0] for r in con.execute("SELECT id FROM items")}
     new = [p for p in cands if sha256_file(p) not in known]
