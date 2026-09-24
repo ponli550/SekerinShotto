@@ -1151,3 +1151,14 @@ def test_autoadd_takes_untagged_new_images_but_not_browser_downloads(tmp_path):
     assert plan["data"]["items"] == ["image.png"]                          # the Safari download is left alone
     code, later = _run("autoadd", str(dl), "--since", str(_t.time()), env=env)
     assert later["data"]["new"] == 0                                       # older than the watcher: untouched
+
+
+def test_home_menu_is_lean_and_jobs_are_reachable():
+    home = pv.keys_for("ss").splitlines()
+    assert not any(l.startswith(("h\t", "w\t")) for l in home)
+    assert any(l.startswith("j\t") and "ss-jobs" in l for l in home)
+    jobs = pv.keys_for("ss-jobs")
+    for verb in ("schedule run --job {row}", "schedule pause --job {row}", "schedule resume --job {row}"):
+        assert verb in jobs
+    assert "schedule log --job {row}" in jobs and "\tout-side\t" in jobs
+    assert any(l.startswith("h\t") for l in pv.keys_for("ss-audit").splitlines())   # sub-panels keep home
