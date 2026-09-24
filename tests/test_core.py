@@ -1224,6 +1224,45 @@ def test_secrets_scrubbed_before_writing_and_image_not_kept(tmp_path):
     assert plan["data"]["items"] == []                                 # nothing left to scrub
 
 
+def test_secrets_scrub_leaves_no_bytes_behind(tmp_path):
+    """An item stored before scrubbing existed: after scrub, the value is gone from every state file."""
+    import os
+    import sqlite3
+    from sekerinshotto.commands import _index
+    from sekerinshotto.notes import manifest_record
+    from sekerinshotto.state import State
+    secret = "Password: " + "8" * 4 + "2" * 6
+    con = State(tmp_path / "state").connect()
+    ex = Extraction(id="sha256:" + "ab" * 32, path=Path("/x.png"))
+    ex.lines = [("hello", 1.0), (secret, 1.0)]                        # as extracted before v10
+    ex.source_state, ex.captured_at = "quarantined", "2026-09-20T10:00:00"
+    ex.quarantined_at, ex.purge_after = "2026-09-24T00:00:00Z", "2026-10-01T00:00:00Z"
+    con.execute("PRAGMA secure_delete=OFF")                           # as databases written before the fix
+    _index(con, manifest_record(ex, "old", None), ex.text, "2026-09-25T00:00:00")
+    for i in range(300):                                              # enough rows that freed pages are not reused
+        filler = Extraction(id=f"sha256:{i:064x}", path=Path(f"/f{i}.png"))
+        filler.lines = [(f"filler text number {i} " * 20, 1.0)]
+        filler.source_state, filler.captured_at = ex.source_state, ex.captured_at
+        filler.quarantined_at, filler.purge_after = ex.quarantined_at, ex.purge_after
+        _index(con, manifest_record(filler, "old", None), filler.text, "2026-09-25T00:00:00")
+    con.commit()
+    con.close()
+    (tmp_path / "content").mkdir()
+    env = {**os.environ, "SEKERINSHOTTO_STATE": str(tmp_path / "state"),
+           "SEKERINSHOTTO_CONTENT": str(tmp_path / "content")}
+    code, res = _run("secrets", "scrub", "--commit", env=env)
+    assert res["ok"] and len(res["data"]["items"]) == 1, res
+    for f in (tmp_path / "state").rglob("*"):
+        if f.is_file():
+            assert secret.encode() not in f.read_bytes(), f
+    # Bytes alone can pass by luck (a small file reuses freed space); the mechanism must hold too.
+    st = State(tmp_path / "state")
+    con = st.connect()
+    assert con.execute("PRAGMA secure_delete").fetchone()[0] == 1
+    raw = sqlite3.connect(st.db_path)
+    assert raw.execute("PRAGMA freelist_count").fetchone()[0] == 0     # vacuumed: no free page holds old text
+
+
 # ---------------------------------------------------------------- code screenshots
 CODE_SNIPPETS = {
     "python": 'import os\nfrom fastapi import FastAPI\n\n@app.get("/u")\ndef get_user(uid: int) -> dict:\n'
