@@ -40,13 +40,16 @@ def is_diagram(rec: dict) -> bool:
 
 def decide(rec: dict) -> tuple[str, str]:
     """-> (outcome, reason); outcome is quarantine | attach | hold."""
-    if rec.get("keep"):
+    if rec.get("keep") and not rec.get("secrets"):
         return "attach", "kept on request"
     if rec["status"] != "ok" and not rec.get("confirmed_by"):
         return "hold", rec.get("status_reason") or "failed"
     unverified = [u["raw"] for u in rec["entities"]["urls"] if u["verified_by"] == "none" and not u.get("flag")]
     if unverified and not rec.get("confirmed_by"):
         return "hold", "unverified URL: " + ", ".join(unverified[:3])
+    if rec.get("secrets"):
+        # The note is scrubbed, but the image still shows the key: never keep it in the vault.
+        return "quarantine", "contains secrets: image purged after 7 days"
     if is_visual(rec):
         return "attach", f"visual: text covers {rec.get('text_coverage', 0):.0%} of the screen"
     if is_diagram(rec):
@@ -150,6 +153,11 @@ def render_audit(items: list[dict], now: str) -> str:
         out.append("")
     if attached:
         out += ["## Attached (visual)", ""] + [f"- [[{stem(r)}]]" for r in attached] + [""]
+    with_secrets = [r for r in items if r.get("secrets")]
+    if with_secrets:
+        out += ["## Secrets removed", "", "Credentials were scrubbed from these notes at extraction; their images",
+                "are never kept. If a key was real, rotate it:", ""]
+        out += [f"- [[{stem(r)}]] — {', '.join(sorted(set(r['secrets'])))}" for r in with_secrets] + [""]
     if redacted:
         out += ["## Redacted", "", "Wi-Fi QR passwords were removed before anything was written:", ""]
         out += [f"- [[{stem(r)}]]" for r in redacted] + [""]

@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
-EXTRACTOR_VERSION = "9"
+EXTRACTOR_VERSION = "10"
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".heic", ".webp", ".tif", ".tiff", ".bmp", ".gif"}
 
 FAIL_MIN_CHARS = 3            # fewer chars and no barcode -> failed/no_text
@@ -380,6 +380,7 @@ class Extraction:
     keep: bool = False
     confirmed_by: str | None = None
     copies: list = field(default_factory=list)        # byte-identical files elsewhere: {path, state, ...}
+    secrets: list = field(default_factory=list)       # kinds of credentials scrubbed at extraction
     chrome_top_n: int = 0                             # OCR lines in the status-bar strip (reading order: first)
     chrome_bottom_n: int = 0                          # OCR lines in the gesture-bar strip (last)
     elapsed_ms: int = 0
@@ -489,6 +490,17 @@ def _extract(path: Path, file_id: str | None = None) -> Extraction:
     decoded = [b for b in bars if b["payload"]]
     if not decoded:
         decoded = _zxing_read(path)            # second decoder only when Vision found nothing usable
+    # Credentials are scrubbed HERE, before any note, manifest or index row can contain them.
+    from .secrets import scrub
+    clean = []
+    for line in ex.lines:
+        t, k = scrub(line[0])
+        ex.secrets += k
+        clean.append((t, *line[1:]))
+    ex.lines = clean
+    for b in decoded:
+        b["payload"], k = scrub(b["payload"])
+        ex.secrets += k
 
     qr_urls = set()
     for b in decoded:

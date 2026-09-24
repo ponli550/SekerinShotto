@@ -156,6 +156,9 @@ def generated_body(ex: Extraction, org: dict | None = None) -> str:
         "held": f"held — {ex.hold_reason}; retried automatically, never auto-deleted",
         "purged": f"purged at {ex.purged_at}; this note is the only record",
     }.get(ex.source_state, ex.source_state))
+    if ex.secrets:
+        kinds = ", ".join(sorted(set(ex.secrets)))
+        src.append(f"- **secrets removed at extraction:** {kinds} — rotate them if they were real")
     if ex.copies:
         states = {}
         for c in ex.copies:
@@ -235,7 +238,7 @@ def manifest_record(ex: Extraction, batch_id: str, note_path: str, source_state:
 
 
 LIFECYCLE = ("stored_path", "quarantined_at", "purge_after", "purged_at", "attachment", "hold_reason",
-             "attempts", "keep", "confirmed_by", "copies")
+             "attempts", "keep", "confirmed_by", "copies", "secrets")
 
 
 def ex_version() -> str:
