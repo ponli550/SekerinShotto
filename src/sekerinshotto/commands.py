@@ -644,7 +644,9 @@ def cmd_purge(a, state: State):
          args=[Arg("target", "an item id / id prefix / note filename, or a quarantine batch id")],
          writes=True,
          details="Only quarantined images can be restored; after purge there is nothing to restore. "
-                 "An image whose original path is occupied again is skipped, never overwritten.")
+                 "An image whose original path is occupied again is skipped, never overwritten. A quarantined "
+                 "copy (a re-sent duplicate) is restored even when its item is purged, attached or held, and "
+                 "is then kept: later cleanups and the watcher leave it alone.")
 def cmd_restore(a, state: State):
     content = _content_root(state, None, required=True)
     con = state.connect()
@@ -652,17 +654,36 @@ def cmd_restore(a, state: State):
              if r.get("stored_path") and Path(r["stored_path"]).parent.name == a.target]
     recs = batch or [json.loads(con.execute("SELECT record FROM items WHERE id=?",
                                             (resolve_id(con, a.target),)).fetchone()[0])]
-    recs = [r for r in recs if r.get("source_state") == "quarantined"]
+    def _q_copies(r):
+        return [c for c in r.get("copies") or [] if c.get("state") == "quarantined" and c.get("stored_path")]
+    recs = [r for r in recs if r.get("source_state") == "quarantined" or _q_copies(r)]
     if not recs:
         raise ToolError(f"{a.target!r} has nothing in quarantine (purged images cannot be restored)")
     if not a.commit:
-        return Result({"committed": False, "would_restore": [{"id": r["id"], "to": r["source_path"],
-                                                              "occupied": Path(r["source_path"]).exists()} for r in recs]})
+        return Result({"committed": False, "would_restore": [
+            {"id": r["id"], "to": to, "occupied": Path(to).exists()} for r in recs
+            for to in ([r["source_path"]] if r.get("source_state") == "quarantined" else [])
+            + [c["path"] for c in _q_copies(r)]]})
     batch_id = now_iso().replace(":", "-") + "-restore"
     done, skipped = [], []
     with state.lock():
         journal = state.journal(batch_id)
         for r in recs:
+            if r.get("source_state") != "quarantined":           # only its copies are in quarantine
+                cs = r.get("copies") or []
+                for k, c in enumerate(cs):
+                    if c.get("state") == "quarantined" and c.get("stored_path"):
+                        if Path(c["path"]).exists():
+                            skipped.append({"id": r["id"], "reason": f"{c['path']} exists"})
+                            continue
+                        Path(c["path"]).parent.mkdir(parents=True, exist_ok=True)
+                        shutil.move(c["stored_path"], c["path"])
+                        journal.append(op="restore_copy", id=r["id"], path=c["path"], from_path=c["stored_path"],
+                                       batch_id=batch_id)
+                        cs[k] = {"path": c["path"], "state": "present", "restored_at": now_iso()}
+                _save(con, r, copies=cs)
+                done.append(r["id"])
+                continue
             dst = Path(r["source_path"])
             if dst.exists():
                 skipped.append({"id": r["id"], "reason": f"{dst} exists"})
@@ -1266,8 +1287,8 @@ def _quarantine_copies(state: State, con, journal, batch_id: str, only: set[str]
         cs, touched = rec.get("copies") or [], False
         for k, c in enumerate(cs):
             src = Path(c["path"])
-            if c.get("state") != "present" or not src.exists():
-                continue
+            if c.get("state") != "present" or c.get("restored_at") or not src.exists():
+                continue                               # a copy the user restored is kept
             dst = state.root / "quarantine" / batch_id / f"{rec['id'].split(':')[1][:8]}-copy{k + 1}-{src.name}"
             try:
                 lc._move(src, dst)
@@ -1649,7 +1670,9 @@ def _photo_named(p: Path) -> bool:
                  "files named like photos/screenshots are touched (Android Screenshot_, WhatsApp Image, macOS "
                  "Screenshot … at …, IMG_/PXL_/VID_/MVIMG_), plus images with a generic name (a phone share's "
                  "'image.png') that carry no browser download tag (com.apple.quarantine) and arrived after the "
-                 "watch job was installed. Images already known by hash are skipped. The watch "
+                 "watch job was installed. A byte-identical re-send of a known image that arrived after the watch job "
+                 "was installed is recorded as a copy and quarantined (7 days; `restore <id>` brings it back and "
+                 "keeps it); known files that were already there are left alone. The watch "
                  "LaunchAgent runs this when the folder changes.")
 def cmd_autoadd(a, state: State):
     import time
@@ -1684,23 +1707,66 @@ def cmd_autoadd(a, state: State):
     cands = [p for p in files if time.time() - p.stat().st_mtime >= a.settle]
     con = state.connect()
     known = {r[0] for r in con.execute("SELECT id FROM items")}
-    new = [p for p in cands if sha256_file(p) not in known]
+    hashed = [(p, sha256_file(p)) for p in cands]
+    new = [p for p, h in hashed if h not in known]
+    # A re-send is a known image that ARRIVED after the watcher was switched on. Known files that were already
+    # in the folder (the originals of an earlier `add`, which copies) are the user's files: never swept up.
+    resent = [(p, h) for p, h in hashed if h in known and since is not None and p.stat().st_mtime >= since
+              and _is_copy(con, p, h)]
     plan = {"folder": str(folder), "now": now_iso(), "photo_named": len(cands), "new": len(new),
-            "already_known": len(cands) - len(new), "items": [p.name for p in new[:50]]}
+            "already_known": len(cands) - len(new), "resent_copies": len(resent),
+            "items": [p.name for p in new[:50]], "copies": [p.name for p, _ in resent[:50]]}
     if not a.commit:
         return Result({"committed": False, **plan},
                       human=f"{folder}: {len(new)} new photo(s) would be extracted and their originals routed "
-                            f"(quarantine 7 days / kept / held); {len(cands) - len(new)} already known\n")
+                            f"(quarantine 7 days / kept / held); {len(resent)} re-sent cop(ies) of known images "
+                            f"would be quarantined for 7 days\n")
+    copies_res = _quarantine_resent(state, con, content, resent) if resent else {"quarantined": 0}
     if not new:
-        return Result({"committed": True, **plan, "written": 0})
+        return Result({"committed": True, **plan, "written": 0, "copies_quarantined": copies_res["quarantined"]})
     ns = argparse.Namespace(src=str(folder), files=new, content=None, limit=None, workers=4, cleanup=False,
                             commit=True, json=False, state=None)
     res = cmd_ingest(ns, state)
     ids = {sha256_file(p) for p in new if p.exists()}
     with state.lock():
         routed = run_cleanup(state, state.connect(), content, True, only=ids)
-    return Result({"committed": True, **plan, "written": res.data.get("written"), "routed": routed["moved"]},
-                  violation=res.violation)
+    return Result({"committed": True, **plan, "written": res.data.get("written"), "routed": routed["moved"],
+                   "copies_quarantined": copies_res["quarantined"]}, violation=res.violation)
+
+
+def _is_copy(con, p: Path, fid: str) -> bool:
+    """A known-hash file that is not the item's own file and not already recorded as a copy (a recorded
+    copy follows its original through cleanup; one the user restored on its own is kept)."""
+    rec = json.loads(con.execute("SELECT record FROM items WHERE id=?", (fid,)).fetchone()[0])
+    here = p.resolve()
+    own = [rec.get("source_path") if rec.get("source_state") == "present" else None, rec.get("stored_path")]
+    if any(o and Path(o).resolve() == here for o in own):
+        return False
+    return not any(c.get("state") == "present" and Path(c["path"]).resolve() == here
+                   for c in rec.get("copies") or [])
+
+
+def _quarantine_resent(state: State, con, content: Path, resent: list[tuple[Path, str]]) -> dict:
+    """Re-sent copies of known images: record each as a copy, then quarantine it (7 days, restorable).
+    The item's own file is never moved here; copies of an item still at its source wait for it."""
+    batch_id = now_iso().replace(":", "-") + "-copies"
+    ids = set()
+    with state.lock():
+        for p, fid in resent:
+            rec = json.loads(con.execute("SELECT record FROM items WHERE id=?", (fid,)).fetchone()[0])
+            cs = rec.get("copies") or []
+            # a path listed as present is already recorded; one quarantined or purged before is a new arrival
+            if not any(c["path"] == str(p) and c.get("state") == "present" for c in cs):
+                _save(con, rec, copies=cs + [{"path": str(p), "state": "present"}])
+            ids.add(fid)
+        con.commit()
+        journal = state.journal(batch_id)
+        moved = _quarantine_copies(state, con, journal, batch_id, ids)
+        con.commit()
+        _rerender(state, con, content, journal, batch_id, moved)
+        con.commit()
+    _write_audit(state, con, content)
+    return {"quarantined": sum(1 for p, _ in resent if not p.exists())}
 
 
 # ---------------------------------------------------------------- panel quick fixes

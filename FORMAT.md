@@ -5,7 +5,7 @@ vault wrapper manages an Obsidian vault. Neither imports the other. They meet
 only at the files and the JSON described here. Any future ingester (PDF, web
 clip, …) that writes this format plugs into the same wrapper.
 
-Status: draft v0.30.0 — 2026-09-25.
+Status: draft v0.31.0 — 2026-09-25.
 
 ## 1. CLI contract (both tools)
 
@@ -269,7 +269,15 @@ Nothing waits on a human, and every non-standard outcome is logged. `cleanup` mo
   its note exists (quarantine, attachments or held), unless `--keep-in-inbox`.
 - `autoadd FOLDER --commit` extracts files named like photos/screenshots (Android `Screenshot_`, `WhatsApp Image`,
   macOS `Screenshot … at …`, `IMG_/PXL_/VID_/MVIMG_`) that are new by hash and not modified in the last 5 s,
-  then routes the originals like cleanup. Known hashes and other images (logos, avatars) are never touched.
+  then routes the originals like cleanup. Other images (logos, avatars) are never touched.
+  A **re-send** (a known hash that arrived after the watch job was installed, at a path that is neither the
+  item's own file nor an already-recorded copy) is added to the item's `copies` and quarantined on the
+  7-day clock; the item's own file is never moved by it, and a copy of an item still at its source waits
+  for it. Known files already in the folder before the watch job (the originals of an `add`, which copies)
+  are left alone: on the trial that is 183 screenshots in ~/Downloads, none touched.
+  `restore <id> --commit` brings a quarantined copy back even when its item is purged, attached or held,
+  marks it `restored_at`, and cleanup and the watcher then keep it. A copy restored together with its
+  original follows the original, as before.
   `schedule install --job watch --folder DIR --commit` runs it when DIR changes (LaunchAgent WatchPaths,
   30 s throttle). The watch job is opt-in: the default `schedule install` never installs it.
 - `restore <id|batch> --commit` moves quarantined images back to their original path, never over an
