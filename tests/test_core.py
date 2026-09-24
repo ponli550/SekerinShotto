@@ -1112,3 +1112,17 @@ def test_rule_suggestions_are_conservative(tmp_path):
     con.commit()
     sug = _rule_suggestions(st, con, 2)
     assert [(s["kind"], s["value"], s["category"]) for s in sug] == [("domain", "luma.com", "event")]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Apple Vision")
+def test_autoadd_waits_for_a_file_still_being_written(tmp_path):
+    import os
+    dl = tmp_path / "Downloads"
+    dl.mkdir()
+    img = Image.new("RGB", (800, 600), "white")
+    ImageDraw.Draw(img).text((40, 200), "Seminar registration 22 January", fill="black",
+                             font=ImageFont.load_default(size=40))
+    img.save(dl / "WhatsApp Image 2026-06-03 at 11.52.02.jpeg")           # just written: still "settling"
+    env = {**os.environ, "SEKERINSHOTTO_STATE": str(tmp_path / "st"), "SEKERINSHOTTO_CONTENT": str(tmp_path / "v")}
+    code, res = _run("autoadd", str(dl), "--settle", "2", "--commit", env=env)
+    assert code == 0 and res["data"]["new"] == 1 and res["data"]["written"] == 1
