@@ -21,7 +21,7 @@ ROW_PATTERN = "^  (%S+)"
 # panvim's term-side closes its pane when the command exits (it is meant for editors), so any command
 # that just prints must be paged, or its output flashes and vanishes.
 PAGER = " | less -R"
-VIEWS = ("home", "class", "concepts", "groups", "audit", "quarantine", "notes", "results")
+VIEWS = ("home", "class", "concepts", "groups", "audit", "quarantine", "notes", "results", "jobs")
 
 _UI_NOISE = re.compile(r"(?i)^(follow|following|reply|replies|like|likes|share|send( message)?|more|see more|view|"
                        r"comment|comments|save|saved|details|print|back|next|done|ok|cancel|search|home|menu|"
@@ -241,6 +241,21 @@ def render(view: str, con, content: Path | None, state_root: Path, category: str
             r = json.loads(rec)
             out.append(f"  {iid.split(':')[1][:8]} {(cap or '')[5:10]} {cat[:9]:<9} "
                        f"{app_slug(r.get('source_app'))[:10]:<10} {headline(r, text, words)}")
+    elif view == "jobs":
+        from .commands import _job_runs, job_status
+        from .state import State as _S
+        st_obj = _S(state_root)
+        out += ["scheduled jobs · Enter = recent runs · R run now · P pause · U resume", ""]
+        for job in ("watch", "purge"):
+            s_ = job_status(st_obj, job)
+            last = (_job_runs(st_obj, job, 1) or [{}])[0]
+            where = f"watching {_short(s_['watching'])}" if s_["watching"] else "daily 03:15"
+            state_word = "on " if s_["on"] else ("off" if s_["installed"] else "not installed")
+            when = _local(last["at"])[4:] if last.get("at") else "-"
+            out.append(f"  {job:<6} {state_word:<13} {where:<26} last {when:<13} {last.get('what', 'no runs yet')}")
+        nxt = con.execute("SELECT MIN(purge_after) FROM items WHERE source_state='quarantined'").fetchone()[0]
+        if nxt:
+            out += ["", f"next image due for purge: {_local(nxt)} local (deleted at the first purge run after that)"]
     elif view == "notes":
         where, params = ("WHERE category=?", (category,)) if category else ("", ())
         out += [f"notes{' · ' + category if category else ''} · newest first", ""]
@@ -266,13 +281,15 @@ SPECS = {
     "ss-quarantine": ("ss-quarantine", "quarantine", 1, True, "95%x90%"),
     "ss-notes": ("ss-notes", "notes", 30, True, "95%x90%"),
     "ss-results": ("ss-results", "results", 2, True, "95%x90%"),
+    "ss-jobs": ("ss-jobs", "jobs", 5, True, "95%x90%"),
 }
 
 
 def _nav() -> list[str]:
     return ["h\thome\tpopup\tss", "c\tcategories\tpopup\tss-class", "k\tconcepts (key terms)\tpopup\tss-concepts",
             "g\tduplicate groups\tpopup\tss-groups", "a\taudit: held + kept\tpopup\tss-audit",
-            "p\tquarantine countdown\tpopup\tss-quarantine", "n\tall notes\tpopup\tss-notes"]
+            "p\tquarantine countdown\tpopup\tss-quarantine", "n\tall notes\tpopup\tss-notes",
+            "j\tjobs: watcher + purge schedule\tpopup\tss-jobs"]
 
 
 def _note_open() -> str:
@@ -284,13 +301,14 @@ def keys_for(name: str) -> str:
          "# lowercase = read-only. UPPERCASE runs the plan, then asks you to type a word before committing;",
          "# no key passes --commit on its own.", "[global]"] + _nav()
     g += ["s\tsearch → results board (on top)\tinput:search: |term|sekerinshotto panel set '{input}' && panvim popup ss-results",
-          "w\twhere things stand (status)\tterm-hold\tsekerinshotto status",
           "A\tADD photos: drop zone — Finder inbox + auto-extract until q (yes or a drop starts it)\t"
           "term-side\tsekerinshotto dropzone --ask",
           "I\tINGEST the inbox (plan, then confirm)\tterm-hold\t" + CONFIRM.format(cmd="ingest", word="yes"),
           "C\tCLEANUP: route images (plan, then confirm)\tterm-hold\t" + CONFIRM.format(cmd="cleanup", word="yes"),
           "O\tORGANIZE: re-apply rules (plan, then confirm)\tterm-hold\t" + CONFIRM.format(cmd="organize", word="yes"),
           "q\tquit\tquit"]
+    if name == "ss":
+        g = [l for l in g if not l.startswith("h\t")]            # home: `h` would go nowhere
     rows: list[str] = []
     direct = {"ss": LIST_ENTER, "ss-class": LIST_ENTER, "ss-concepts": LIST_ENTER,
               "ss-audit": CARD_ENTER, "ss-notes": CARD_ENTER, "ss-results": CARD_ENTER,
@@ -320,6 +338,11 @@ def keys_for(name: str) -> str:
                 "U\tRESTORE this image (plan, then confirm)\tterm-hold\t" + CONFIRM.format(cmd="restore {row}", word="yes"),
                 "P\tPURGE images that are due (plan, then type purge)\tterm-hold\t"
                 + CONFIRM.format(cmd="purge", word="purge")]
+    if name == "ss-jobs":
+        rows = ["R\tRUN this job now (plan, then confirm)\tterm-hold\t" + CONFIRM.format(cmd="schedule run --job {row}", word="yes"),
+                "P\tPAUSE this job (plan, then confirm)\tterm-hold\t" + CONFIRM.format(cmd="schedule pause --job {row}", word="yes"),
+                "U\tRESUME this job (plan, then confirm)\tterm-hold\t" + CONFIRM.format(cmd="schedule resume --job {row}", word="yes")]
+        direct = "<CR>\tEnter: recent runs of this job\tout-side\tsekerinshotto schedule log --job {row}"
     if name == "ss":
         rows = ["l\tlist this category or image state\tterm\tsekerinshotto panel set-row {row} && panvim popup ss-results"]
     return "\n".join(g + (["[row]"] + rows if rows else []) + (["[direct]", direct] if direct else [])) + "\n"

@@ -1681,8 +1681,8 @@ def cmd_autoadd(a, state: State):
     con = state.connect()
     known = {r[0] for r in con.execute("SELECT id FROM items")}
     new = [p for p in cands if sha256_file(p) not in known]
-    plan = {"folder": str(folder), "photo_named": len(cands), "new": len(new), "already_known": len(cands) - len(new),
-            "items": [p.name for p in new[:50]]}
+    plan = {"folder": str(folder), "now": now_iso(), "photo_named": len(cands), "new": len(new),
+            "already_known": len(cands) - len(new), "items": [p.name for p in new[:50]]}
     if not a.commit:
         return Result({"committed": False, **plan},
                       human=f"{folder}: {len(new)} new photo(s) would be extracted and their originals routed "
@@ -1845,3 +1845,95 @@ def cmd_rules_suggest(a, state: State):
         con.commit()
     return Result({"committed": True, "added": [s["toml"] for s in chosen], "file": str(f),
                    "notes_rewritten": rep["notes_written"], "by_category": rep["by_category"]})
+
+
+# ---------------------------------------------------------------- job control (panel ss-jobs)
+def _job_spec(name: str) -> dict:
+    if name not in JOBS:
+        raise ToolError(f"unknown job {name!r}; valid: {', '.join(JOBS)}")
+    return JOBS[name]
+
+
+def _job_runs(state: State, job: str, limit: int = 10) -> list[dict]:
+    """Recent runs from <state>/logs/<job>.log (one JSON envelope per run), newest first."""
+    f = state.dir("logs") / f"{job}.log"
+    out = []
+    if f.exists():
+        for line in reversed(f.read_text().splitlines()):
+            try:
+                env = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            d = env.get("data") or {}
+            if job == "watch":
+                what = f"took {d.get('new', 0)}" + (f", routed {d.get('routed')}" if d.get("routed") else "")
+            else:
+                what = f"purged {d.get('purged', 0)}, waiting {d.get('waiting', 0)}"
+            out.append({"at": d.get("now"), "ok": env.get("ok"), "what": what})    # None: logged before times were kept
+            if len(out) >= limit:
+                break
+    return out
+
+
+def job_status(state: State, job: str) -> dict:
+    spec = JOBS[job]
+    f = LAUNCH_DIR / f"{spec['label']}.plist"
+    runs, last_exit = None, None
+    code, text = _launchctl("print", f"gui/{os.getuid()}/{spec['label']}")
+    if code == 0:
+        m = re.search(r"\bruns = (\d+)", text)
+        e = re.search(r"last exit code = (\S+)", text)
+        runs, last_exit = (int(m.group(1)) if m else None), (e.group(1) if e else None)
+    log = state.dir("logs") / f"{job}.log"
+    return {"job": job, "installed": f.exists(), "on": code == 0, "runs": runs, "last_exit": last_exit,
+            "last_log_at": log.stat().st_mtime if log.exists() else None,
+            "watching": (plistlib.loads(f.read_bytes()).get("WatchPaths") or [None])[0] if f.exists() else None}
+
+
+@command("schedule log", "Recent runs of a scheduled job, newest first",
+         args=[Arg("--job", "watch or purge", default="watch"), Arg("--limit", "runs", type=int, default=15)])
+def cmd_schedule_log(a, state: State):
+    _job_spec(a.job)
+    runs = _job_runs(state, a.job, a.limit)
+    st = job_status(state, a.job)
+    import datetime as _dt
+    fmt = lambda t: pv._local(t) if t else "earlier        "
+    lines = [f"{a.job}: {'on' if st['on'] else 'off'}" + (f" · watching {st['watching']}" if st["watching"] else "")
+             + (f" · {st['runs']} run(s) since load, last exit {st['last_exit']}" if st["on"] else ""), ""]
+    lines += [f"  {fmt(r['at'])}  {'ok ' if r['ok'] else 'ERR'}  {r['what']}" for r in runs] or ["  no runs logged yet"]
+    err = state.dir("logs") / f"{a.job}.err"
+    if err.exists() and err.read_text().strip():
+        lines += ["", "stderr (last lines):"] + ["  " + l for l in err.read_text().strip().splitlines()[-5:]]
+    return Result({"job": a.job, "status": st, "runs": runs}, human="\n".join(lines) + "\n")
+
+
+def _job_ctl(a, state: State, action: str) -> Result:
+    spec = _job_spec(a.job)
+    f = LAUNCH_DIR / f"{spec['label']}.plist"
+    if not f.exists():
+        raise ToolError(f"the {a.job} job is not installed; see `schedule install`")
+    st = job_status(state, a.job)
+    if not a.commit:
+        verb = {"run": "run now", "pause": "pause (unload; the plist stays)", "resume": "resume (load)"}[action]
+        return Result({"committed": False, "job": a.job, "would": verb, "on": st["on"]},
+                      human=f"{a.job} is {'on' if st['on'] else 'off'}; would {verb}\n")
+    uid = f"gui/{os.getuid()}"
+    if action == "pause" and st["on"]:
+        _launchctl("bootout", f"{uid}/{spec['label']}")
+    elif action == "resume" and not st["on"]:
+        _launchctl("bootstrap", uid, str(f))
+    elif action == "run":
+        if not st["on"]:
+            raise ToolError(f"the {a.job} job is paused; resume it first")
+        _launchctl("kickstart", f"{uid}/{spec['label']}")
+    now = job_status(state, a.job)
+    return Result({"committed": True, "job": a.job, "action": action, "on": now["on"]},
+                  human=f"{a.job}: {action} done · now {'on' if now['on'] else 'off'}\n")
+
+
+for _name, _summary in (("run", "Run a scheduled job now"), ("pause", "Pause a scheduled job (keeps it installed)"),
+                        ("resume", "Resume a paused scheduled job")):
+    def _mk(action):
+        return lambda a, state: _job_ctl(a, state, action)
+    command(f"schedule {_name}", _summary, args=[Arg("--job", "watch or purge", required=True)],
+            writes=True)(_mk(_name))
