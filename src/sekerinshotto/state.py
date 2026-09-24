@@ -116,6 +116,7 @@ class State:
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA journal_mode=WAL")
         con.execute("PRAGMA foreign_keys=ON")
+        con.execute("PRAGMA secure_delete=ON")      # deleted text (a scrubbed secret) is zeroed, not left in free pages
         _migrate(con)
         if con.execute("SELECT 1 FROM items WHERE added_at IS NULL LIMIT 1").fetchone():
             self._backfill_added(con)

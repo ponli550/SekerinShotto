@@ -1944,7 +1944,8 @@ for _name, _summary in (("run", "Run a scheduled job now"), ("pause", "Pause a s
          writes=True,
          details="New ingests scrub secrets at extraction. This cleans items extracted before that: OCR text, "
                  "QR payloads and URLs are scrubbed in the index, their notes are regenerated, batch manifests "
-                 "are rewritten in place, and cleanup sends the images to quarantine (never kept as attachments).")
+                 "are rewritten in place, and cleanup sends the images to quarantine (never kept as attachments). "
+                 "The index is then optimized and vacuumed so no old value survives in free pages or the WAL.")
 def cmd_secrets_scrub(a, state: State):
     from .secrets import scrub
     content = _content_root(state, None, required=True)
@@ -1984,5 +1985,11 @@ def cmd_secrets_scrub(a, state: State):
         rer = _rerender(state, con, content, state.journal(batch_id), batch_id, ids)
         con.commit()
         res = run_cleanup(state, con, content, True, batch_id, only=ids) if ids else {"moved": {}}
+        # Old values can outlive the rows: FTS segments, free pages and the WAL. Rewrite all three.
+        con.execute("INSERT INTO text_fts(text_fts) VALUES('optimize')")
+        con.commit()
+        con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        con.execute("VACUUM")
+        con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     return Result({"committed": True, "items": items, "manifests": [m.name for m in manifests],
                    "notes_rewritten": rer["notes_written"], "cleanup": res.get("moved")})
