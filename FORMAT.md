@@ -263,7 +263,8 @@ Nothing waits on a human, and every non-standard outcome is logged. `cleanup` mo
 - `purge --commit` deletes only images with `now >= purge_after`, and only files whose resolved path is
   inside `<state>/quarantine/` (symlinks and `..` refused). The note then says it is the only record.
 - `schedule install --commit` installs a LaunchAgent (`com.sekerinshotto.purge`) that runs `purge --commit`
-  daily at 03:15, logging to `<state>/logs/`; it passes no `--state`, so it follows `config use-state`.
+  hourly at :15 (a calendar interval: a run missed while the Mac slept fires on wake), so an image is
+  deleted within an hour of its 7 days, logging to `<state>/logs/`; it passes no `--state`, so it follows `config use-state`.
   `schedule show` / `schedule remove --commit` manage it. The drop zone routes each new image right after
   its note exists (quarantine, attachments or held), unless `--keep-in-inbox`.
 - `autoadd FOLDER --commit` extracts files named like photos/screenshots (Android `Screenshot_`, `WhatsApp Image`,

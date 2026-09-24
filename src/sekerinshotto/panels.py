@@ -249,7 +249,7 @@ def render(view: str, con, content: Path | None, state_root: Path, category: str
         for job in ("watch", "purge"):
             s_ = job_status(st_obj, job)
             last = (_job_runs(st_obj, job, 1) or [{}])[0]
-            where = f"watching {_short(s_['watching'])}" if s_["watching"] else "daily 03:15"
+            where = f"watching {_short(s_['watching'])}" if s_["watching"] else "hourly at :15"
             state_word = "on " if s_["on"] else ("off" if s_["installed"] else "not installed")
             when = _local(last["at"])[4:] if last.get("at") else "-"
             out.append(f"  {job:<6} {state_word:<13} {where:<26} last {when:<13} {last.get('what', 'no runs yet')}")

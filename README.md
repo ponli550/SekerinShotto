@@ -69,7 +69,7 @@ confidence (about 4 in 5 right on topics in testing). It never changes a note; c
 ## Automatic
 
 ```bash
-sekerinshotto schedule install --commit                         # purge due images daily at 03:15
+sekerinshotto schedule install --commit                         # purge due images hourly at :15
 sekerinshotto autoadd ~/Downloads                               # plan: which photos would be taken
 sekerinshotto schedule install --job watch --folder ~/Downloads --commit   # opt-in: phone photos via Taildrop
 sekerinshotto schedule show
