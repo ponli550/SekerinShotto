@@ -1126,3 +1126,28 @@ def test_autoadd_waits_for_a_file_still_being_written(tmp_path):
     env = {**os.environ, "SEKERINSHOTTO_STATE": str(tmp_path / "st"), "SEKERINSHOTTO_CONTENT": str(tmp_path / "v")}
     code, res = _run("autoadd", str(dl), "--settle", "2", "--commit", env=env)
     assert code == 0 and res["data"]["new"] == 1 and res["data"]["written"] == 1
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Apple Vision + xattr")
+def test_autoadd_takes_untagged_new_images_but_not_browser_downloads(tmp_path):
+    import os, time as _t
+    dl = tmp_path / "Downloads"
+    dl.mkdir()
+    img = Image.new("RGB", (800, 600), "white")
+    ImageDraw.Draw(img).text((40, 200), "Hackathon registration 22 January", fill="black",
+                             font=ImageFont.load_default(size=40))
+    img.save(dl / "image.png")                                            # a phone share: generic name, no tag
+    img2 = img.copy(); ImageDraw.Draw(img2).text((40, 400), "logo", fill="black")
+    img2.save(dl / "logo.png")
+    subprocess.run(["xattr", "-w", "com.apple.quarantine", "0083;6a9cede8;Safari;X", str(dl / "logo.png")], check=True)
+    old = _t.time() - 60
+    for f in dl.iterdir():
+        os.utime(f, (old, old))
+    env = {**os.environ, "SEKERINSHOTTO_STATE": str(tmp_path / "st"), "SEKERINSHOTTO_CONTENT": str(tmp_path / "v"),
+           "SEKERINSHOTTO_LAUNCH_DIR": str(tmp_path / "agents")}
+    code, none_yet = _run("autoadd", str(dl), env=env)                    # no watch installed, no --since
+    assert none_yet["data"]["new"] == 0
+    code, plan = _run("autoadd", str(dl), "--since", str(old - 10), env=env)
+    assert plan["data"]["items"] == ["image.png"]                          # the Safari download is left alone
+    code, later = _run("autoadd", str(dl), "--since", str(_t.time()), env=env)
+    assert later["data"]["new"] == 0                                       # older than the watcher: untouched
