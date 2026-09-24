@@ -1419,3 +1419,82 @@ def test_iphone_heic_if_supported(tmp_path):
     except (KeyError, OSError, ValueError):
         pytest.skip("no HEIF encoder")
     assert iphone_source(tmp_path / "IMG_7777.HEIC")["source_app"] == "com.apple.camera"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Apple Vision")
+def test_autoadd_quarantines_a_resent_copy_and_restore_keeps_it(tmp_path):
+    import os
+    import shutil
+    dl = tmp_path / "Downloads"
+    dl.mkdir()
+    img = Image.new("RGB", (800, 600), "white")
+    ImageDraw.Draw(img).text((40, 200), "Seminar registration 22 January", fill="black",
+                             font=ImageFont.load_default(size=40))
+    first = dl / "WhatsApp Image 2026-06-03 at 11.52.02.jpeg"
+    img.save(first)
+    kept = tmp_path / "first.jpeg"
+    shutil.copy(first, kept)
+    old = 1_700_000_000
+    os.utime(first, (old, old))
+    env = {**os.environ, "SEKERINSHOTTO_STATE": str(tmp_path / "st"), "SEKERINSHOTTO_CONTENT": str(tmp_path / "v")}
+    code, res = _run("autoadd", str(dl), "--commit", env=env)
+    assert code == 0 and res["data"]["written"] == 1 and not first.exists()   # original quarantined
+
+    again = dl / "WhatsApp Image 2026-06-03 at 11.52.02 (1).jpeg"             # the same bytes, re-sent
+    shutil.copy(kept, again)
+    os.utime(again, (old, old))
+    code, plan = _run("autoadd", str(dl), env=env)                             # no watch installed: an old
+    assert plan["data"]["resent_copies"] == 0                                  # known file is the user's
+    code, plan = _run("autoadd", str(dl), "--since", str(old - 1), env=env)
+    assert plan["data"]["resent_copies"] == 1 and plan["data"]["new"] == 0 and again.exists()
+    code, res = _run("autoadd", str(dl), "--since", str(old - 1), "--commit", env=env)
+    assert code == 0 and res["data"]["copies_quarantined"] == 1 and not again.exists()
+    import sqlite3
+    item = sqlite3.connect(tmp_path / "st" / "index.sqlite").execute("SELECT id FROM items").fetchone()[0]
+    note = next((tmp_path / "v" / "notes").rglob("*.md")).read_text()
+    assert "identical copies: 1 quarantined" in note
+
+    code, res = _run("restore", item, "--commit", env=env)                     # original and copy come back
+    assert code == 0 and again.exists() and first.exists()
+    code, res = _run("autoadd", str(dl), "--since", str(old - 1), "--commit", env=env)   # fires again: no-op
+    assert res["data"]["resent_copies"] == 0 and again.exists() and first.exists()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Apple Vision")
+def test_restore_brings_back_a_copy_of_a_purged_item(tmp_path):
+    import os
+    import shutil
+    import sqlite3
+    dl = tmp_path / "Downloads"
+    dl.mkdir()
+    img = Image.new("RGB", (800, 600), "white")
+    ImageDraw.Draw(img).text((40, 200), "Hackathon registration 9 March", fill="black",
+                             font=ImageFont.load_default(size=40))
+    first = dl / "WhatsApp Image 2026-06-04 at 10.00.00.jpeg"
+    img.save(first)
+    kept = tmp_path / "k.jpeg"
+    shutil.copy(first, kept)
+    old = 1_700_000_000
+    os.utime(first, (old, old))
+    env = {**os.environ, "SEKERINSHOTTO_STATE": str(tmp_path / "st"), "SEKERINSHOTTO_CONTENT": str(tmp_path / "v")}
+    _run("autoadd", str(dl), "--commit", env=env)
+    # age the quarantine so purge deletes the original
+    con = sqlite3.connect(tmp_path / "st" / "index.sqlite")
+    iid, raw = con.execute("SELECT id, record FROM items").fetchone()
+    rec = json.loads(raw)
+    rec["purge_after"] = "2000-01-01T00:00:00Z"
+    con.execute("UPDATE items SET record=? WHERE id=?", (json.dumps(rec), iid))
+    con.commit()
+    con.close()
+    code, res = _run("purge", "--commit", env=env)
+    assert res["data"]["purged"] == 1
+    again = dl / "resent.jpeg"
+    shutil.copy(kept, again)
+    os.utime(again, (old, old))
+    _run("autoadd", str(dl), "--since", "0", "--commit", env=env)
+    assert not again.exists()
+    code, res = _run("restore", iid, "--commit", env=env)
+    assert code == 0 and res["data"]["restored"] == 1 and again.exists()
+    _run("cleanup", "--commit", env=env)                                       # a restored copy is kept
+    _run("autoadd", str(dl), "--since", "0", "--commit", env=env)
+    assert again.exists()
