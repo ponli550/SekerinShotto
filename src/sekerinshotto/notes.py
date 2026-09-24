@@ -15,7 +15,7 @@ USER_TAIL = "\n\n## Notes\n\n"
 OWNED_KEYS = ["id", "ingester", "ingester_version", "source_type", "source_app", "captured_at",
               "ingested", "status", "status_reason", "category", "decided_by", "urls", "urls_unverified", "urls_corrected", "domains",
               "qr", "group", "rank", "group_size", "members", "source_state", "purge_after", "decided_evidence", "terms", "sequence", "seq_part", "seq_size",
-              "code_language", "code_imports", "tags"]
+              "code_language", "code_imports", "camera_model", "tags"]
 WRITEBACK_KEYS = ("category", "decided_by", "decided_evidence")   # kept when a caller decided them
 WRITEBACK_BY = ("llm", "user", "laya")
 _SKIP_PKG = {"com", "org", "net", "my", "io", "co", "app", "android", "apple"}
@@ -185,6 +185,7 @@ def render(ex: Extraction, ingested: str, existing: str | None = None, org: dict
         "urls_corrected": [f"{u['raw']} -> {u['url']}" for u in ex.urls if u.get("corrected")],
         "domains": ex.domains,
         "qr": sorted({b["type"] for b in ex.barcodes}),
+        "camera_model": ex.camera_model,
         "code_language": (ex.code or {}).get("lang"), "code_imports": (ex.code or {}).get("imports") or [],
         "source_state": ex.source_state, "purge_after": ex.purge_after,
         "tags": ["sekerinshotto"] + ([f"sekerinshotto/{ex.status}"] if ex.status != "ok" else [])
@@ -228,7 +229,7 @@ def manifest_record(ex: Extraction, batch_id: str, note_path: str, source_state:
         "sequence": org.get("sequence"), "seq_part": org.get("seq_part"), "seq_size": org.get("seq_size"),
         "status": ex.status, "status_reason": ex.status_reason,
         "entities": {"qr": ex.barcodes, "urls": ex.urls, "domains": ex.domains},
-        "code": ex.code,
+        "code": ex.code, "camera_model": ex.camera_model,
         "text_chars": len(ex.text), "ocr_confidence": ex.ocr_confidence,
         "width": ex.width, "height": ex.height, "bytes": ex.bytes,
         "sig": ex.sig, "toks": ex.toks, "dhash": ex.dhash, "content_tokens": ex.content_tokens,
@@ -258,6 +259,7 @@ def extraction_from_record(rec: dict, text: str) -> Extraction:
     ex.barcodes = rec["entities"]["qr"]
     ex.urls = rec["entities"]["urls"]
     ex.code = rec.get("code")
+    ex.camera_model = rec.get("camera_model")
     ex.status, ex.status_reason = rec["status"], rec.get("status_reason")
     ex.ocr_confidence = rec.get("ocr_confidence")
     ex.sig, ex.dhash, ex.content_tokens = rec.get("sig") or [], rec.get("dhash"), rec.get("content_tokens") or 0

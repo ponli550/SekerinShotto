@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
-EXTRACTOR_VERSION = "11"
+EXTRACTOR_VERSION = "12"
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".heic", ".webp", ".tif", ".tiff", ".bmp", ".gif"}
 
 FAIL_MIN_CHARS = 3            # fewer chars and no barcode -> failed/no_text
@@ -89,6 +89,30 @@ def parse_filename(name: str) -> dict:
     if len(pkg) >= 2:
         out["source_app"] = ".".join(pkg)
     return out
+
+
+# iPhone: IMG_1234.HEIC, IMG_E1234.JPG (an edit), "IMG_1234 (1).PNG" (a re-save). The name has no
+# date or app, so the source comes from evidence in the file, never from the name alone.
+_IPHONE = re.compile(r"^IMG_E?\d{4}(?: \(\d+\))?$", re.I)
+
+
+def iphone_source(path: Path) -> dict:
+    """{"source_app", "camera_model"?} for an iPhone-named file, or {} when the file does not say.
+    EXIF Make=Apple -> a camera photo; a PNG with no camera EXIF -> an iOS screenshot (they are PNGs)."""
+    if not _IPHONE.match(path.stem):
+        return {}
+    Image = _pil()
+    try:
+        with Image.open(path) as im:
+            exif, fmt = im.getexif(), (im.format or "").upper()
+    except Exception:  # noqa: BLE001
+        return {}
+    make, model = str(exif.get(271) or "").strip(), str(exif.get(272) or "").strip()
+    if make.lower().startswith("apple"):
+        return {"source_app": "com.apple.camera", **({"camera_model": model} if model else {})}
+    if fmt == "PNG" and not make:
+        return {"source_app": "com.apple.ios.screenshot"}
+    return {}
 
 
 # ---- barcodes ----
@@ -381,6 +405,7 @@ class Extraction:
     confirmed_by: str | None = None
     copies: list = field(default_factory=list)        # byte-identical files elsewhere: {path, state, ...}
     secrets: list = field(default_factory=list)       # kinds of credentials scrubbed at extraction
+    camera_model: str | None = None                   # EXIF Model of a camera photo ("iPhone 15 Pro")
     code: dict | None = None                          # {lang, score, why, imports, code_lines} when code (code.py)
     chrome_top_n: int = 0                             # OCR lines in the status-bar strip (reading order: first)
     chrome_bottom_n: int = 0                          # OCR lines in the gesture-bar strip (last)
@@ -480,6 +505,8 @@ def _extract(path: Path, file_id: str | None = None) -> Extraction:
     t0 = time.perf_counter()
     ex = Extraction(id=file_id or sha256_file(path), path=path, bytes=path.stat().st_size)
     ex.__dict__.update(parse_filename(path.name))
+    if not ex.source_app:
+        ex.__dict__.update(iphone_source(path))
     if not ex.captured_at:
         ex.captured_at = fallback_date(path)
     try:
