@@ -1040,7 +1040,7 @@ def test_schedule_plist_runs_purge_without_state_flag(tmp_path, monkeypatch):
     monkeypatch.setattr(cm, "_bin", lambda: "/usr/local/bin/sekerinshotto")
     pl = cm._plist("purge", _State(tmp_path / "st"))
     assert pl["ProgramArguments"] == ["/usr/local/bin/sekerinshotto", "purge", "--commit", "--json"]
-    assert pl["StartCalendarInterval"] == {"Hour": 3, "Minute": 15} and "--state" not in pl["ProgramArguments"]
+    assert pl["StartCalendarInterval"] == {"Minute": 15} and "--state" not in pl["ProgramArguments"]
     assert pl["StandardOutPath"].endswith("logs/purge.log")
 
 
@@ -1364,3 +1364,13 @@ def test_code_screenshot_note(tmp_path):
     body = note.split("```python\n", 1)[1].split("\n```", 1)[0].splitlines()
     assert "def get_user(uid: int) -> dict:" in body            # no language correction, no → glyph
     assert "    if uid < 0:" in body and "        raise ValueError(\"bad\")" in body
+
+
+def test_purge_with_nothing_due_touches_no_file(sample):
+    src, content, env = sample
+    _run("ingest", str(src), "--content", str(content), "--commit", env=env)
+    _run("cleanup", "--commit", env=env)
+    before = {p: p.stat().st_mtime_ns for p in content.rglob("*") if p.is_file()}
+    code, res = _run("purge", "--commit", env=env)
+    assert code == 0 and res["data"]["purged"] == 0
+    assert {p: p.stat().st_mtime_ns for p in content.rglob("*") if p.is_file()} == before

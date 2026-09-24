@@ -603,6 +603,10 @@ def cmd_purge(a, state: State):
                        "waiting": len(waiting),
                        "next": waiting[:10], "due_items": [{"id": r["id"], "purge_after": r["purge_after"]}
                                                            for r in due[:50]]})
+    if not due and not copies_due:
+        # The hourly job usually finds nothing: touch no file (AUDIT.md, notes, journal) in that case.
+        return Result({"committed": True, "now": now, "purged": 0, "copies_purged": 0, "refused": [],
+                       "waiting": len(waiting), "notes_rewritten": 0})
     batch_id = now.replace(":", "-") + "-purge"
     purged, refused = [], []
     with state.lock():
@@ -1514,8 +1518,8 @@ LAUNCH_DIR = Path(os.environ.get("SEKERINSHOTTO_LAUNCH_DIR") or Path.home() / "L
 JOBS = {
     "watch": {"label": "com.sekerinshotto.watch", "summary": "autoadd photos from a folder when it changes (opt-in)",
               "args": ["autoadd"], "when": {}, "opt_in": True},
-    "purge": {"label": "com.sekerinshotto.purge", "summary": "purge due quarantined images daily at 03:15",
-              "args": ["purge", "--commit", "--json"], "when": {"StartCalendarInterval": {"Hour": 3, "Minute": 15}}},
+    "purge": {"label": "com.sekerinshotto.purge", "summary": "purge due quarantined images hourly at :15",
+              "args": ["purge", "--commit", "--json"], "when": {"StartCalendarInterval": {"Minute": 15}}},
 }
 
 
@@ -1560,7 +1564,7 @@ def cmd_schedule_show(a, state: State):
     return Result({"jobs": out, "state": str(state.root)})
 
 
-@command("schedule install", "Install the scheduled jobs as LaunchAgents (purge daily at 03:15)",
+@command("schedule install", "Install the scheduled jobs as LaunchAgents (purge hourly at :15)",
          args=[Arg("--job", "only this job", default=None),
                Arg("--folder", "watch job: the folder to autoadd from (e.g. ~/Downloads)")],
          writes=True,
