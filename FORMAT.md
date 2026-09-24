@@ -5,7 +5,7 @@ vault wrapper manages an Obsidian vault. Neither imports the other. They meet
 only at the files and the JSON described here. Any future ingester (PDF, web
 clip, …) that writes this format plugs into the same wrapper.
 
-Status: draft v0.29.0 — 2026-09-25.
+Status: draft v0.30.0 — 2026-09-25.
 
 ## 1. CLI contract (both tools)
 
@@ -487,6 +487,11 @@ older wrappers and syncs the registry title column of `ss*` rows only.
 Filenames and dates: besides Android `Screenshot_YYYYMMDD_HHMMSS_<package>…`, SekerinShotto reads
 `WhatsApp Image YYYY-MM-DD at HH.MM.SS`, macOS `Screenshot YYYY-MM-DD at H.MM.SS AM/PM`, and camera
 `IMG_/PXL_/VID_/MVIMG_YYYYMMDD_HHMMSS`; otherwise EXIF DateTimeOriginal, else the file's modification time.
+iPhone names (`IMG_1234`, `IMG_E1234` edits, `IMG_1234 (1)` re-saves; extractor v12) carry no date or app,
+so the source comes from the file: EXIF Make `Apple` → `source_app: com.apple.camera` plus `camera_model`
+("iPhone 15 Pro"); a PNG with no camera EXIF → `com.apple.ios.screenshot` (iOS saves screenshots as PNG);
+anything else (a JPEG with no Make, another maker's camera) → no source. Notes are named `…-camera-…` /
+`…-screenshot-…`. Not yet checked against real iPhone files.
 A note named `undated-…` is renamed once when it gains a date (journal `move`); otherwise paths never change.
 `added_at` is set on first insert and never updated (backfilled from the earliest batch for older rows);
 the home panel lists recently added notes by it. `add` prints each created note's path.

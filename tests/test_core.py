@@ -1374,3 +1374,48 @@ def test_purge_with_nothing_due_touches_no_file(sample):
     code, res = _run("purge", "--commit", env=env)
     assert code == 0 and res["data"]["purged"] == 0
     assert {p: p.stat().st_mtime_ns for p in content.rglob("*") if p.is_file()} == before
+
+
+# ---------------------------------------------------------------- iPhone names
+def _exif_jpeg(path, make=None, model=None):
+    img = Image.new("RGB", (64, 64), "gray")
+    ex = Image.Exif()
+    if make:
+        ex[271] = make
+    if model:
+        ex[272] = model
+    img.save(path, exif=ex)
+
+
+def test_iphone_camera_photo(tmp_path):
+    from sekerinshotto.extract import iphone_source
+    for name in ("IMG_1234.JPG", "IMG_E1234.jpg", "IMG_1234 (1).jpeg"):
+        _exif_jpeg(tmp_path / name, "Apple", "iPhone 15 Pro")
+        assert iphone_source(tmp_path / name) == {"source_app": "com.apple.camera", "camera_model": "iPhone 15 Pro"}
+
+
+def test_iphone_screenshot_is_a_png_without_camera_exif(tmp_path):
+    from sekerinshotto.extract import iphone_source
+    Image.new("RGB", (64, 64), "white").save(tmp_path / "IMG_0412.PNG")
+    assert iphone_source(tmp_path / "IMG_0412.PNG") == {"source_app": "com.apple.ios.screenshot"}
+
+
+def test_iphone_name_without_evidence_sets_nothing(tmp_path):
+    from sekerinshotto.extract import iphone_source
+    _exif_jpeg(tmp_path / "IMG_0001.JPG")                             # JPEG, no Make: could be anything
+    _exif_jpeg(tmp_path / "IMG_0002.JPG", "samsung", "SM-S918B")      # an Android camera using IMG_ names
+    _exif_jpeg(tmp_path / "photo.jpg", "Apple", "iPhone 15")          # not an iPhone file name
+    for n in ("IMG_0001.JPG", "IMG_0002.JPG", "photo.jpg"):
+        assert iphone_source(tmp_path / n) == {}, n
+
+
+def test_iphone_heic_if_supported(tmp_path):
+    from sekerinshotto.extract import _pil, iphone_source
+    _pil()                                                            # registers the HEIF opener
+    img, ex = Image.new("RGB", (64, 64), "gray"), Image.Exif()
+    ex[271], ex[272] = "Apple", "iPhone 13"
+    try:
+        img.save(tmp_path / "IMG_7777.HEIC", exif=ex)
+    except (KeyError, OSError, ValueError):
+        pytest.skip("no HEIF encoder")
+    assert iphone_source(tmp_path / "IMG_7777.HEIC")["source_app"] == "com.apple.camera"
