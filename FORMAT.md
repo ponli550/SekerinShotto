@@ -466,6 +466,12 @@ marker (`• 1st`) or a job title (`Senior Lecturer …`), unless it contains an
 (Program, Express, Services, University…). On the trial: 21 lines redacted this way, 0 false positives
 left after the organisation-word filter (3 before).
 
+Colours: structure (headings, counts) uses theme roles; what the eye scans for uses the VIBRANT hex table in
+`panels.py` — image states (quarantined orange, kept green, held red, waiting cyan, purged grey), one colour per
+category, the purge countdown (bold yellow; "due now" bold red), job on/off, ids, bars and the title.
+(panvim bug fixed alongside: colours used to vanish at every panel's first refresh — see
+`~/.local/lib/panvim/CHANGES-2026-09-24.md` item 6.)
+
 Keys follow pan's convention: lowercase = read-only; UPPERCASE runs the plan, then asks the user to type
 `yes` (`purge` for purge) before committing. No key passes `--commit` on its own; a test enforces it.
 

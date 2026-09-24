@@ -1,5 +1,6 @@
 """Phase 1 tests. The end-to-end tests run Apple Vision, so they need macOS."""
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -989,7 +990,8 @@ def test_syntax_colours_are_ones_panvim_resolves():
         if line.startswith("#") or not line.strip():
             continue
         colour = line.split("\t")[1].split(",")[0]
-        assert colour in pv.SYNTAX_COLOURS, line
+        assert colour in pv.SYNTAX_COLOURS or re.fullmatch(r"#[0-9a-f]{6}", colour), line
+        assert "/" not in line.split("\t")[2], line                  # the engine's :syntax delimiter
 
 
 def test_cards_use_panvims_out_side():
