@@ -1509,7 +1509,8 @@ def cmd_dropzone(a, state: State):
 # ---------------------------------------------------------------- schedule (LaunchAgents)
 import plistlib  # noqa: E402
 
-LAUNCH_DIR = Path.home() / "Library" / "LaunchAgents"
+# Overridable so tests never read or touch the real LaunchAgents of the machine they run on.
+LAUNCH_DIR = Path(os.environ.get("SEKERINSHOTTO_LAUNCH_DIR") or Path.home() / "Library" / "LaunchAgents")
 JOBS = {
     "watch": {"label": "com.sekerinshotto.watch", "summary": "autoadd photos from a folder when it changes (opt-in)",
               "args": ["autoadd"], "when": {}, "opt_in": True},
@@ -1608,6 +1609,23 @@ def cmd_schedule_remove(a, state: State):
 
 
 # ---------------------------------------------------------------- autoadd (phone -> Mac)
+def _download_tag(p: Path) -> str | None:
+    """The app macOS recorded as having downloaded the file (com.apple.quarantine), e.g. 'Safari'.
+    Browsers tag what they save from the web; Taildrop (Tailscale) and local copies do not."""
+    import subprocess
+    r = subprocess.run(["xattr", "-p", "com.apple.quarantine", str(p)], capture_output=True, text=True)
+    if r.returncode != 0:
+        return None
+    parts = r.stdout.strip().split(";")
+    return parts[2] if len(parts) > 2 and parts[2] else "unknown"
+
+
+def _watch_since(state: State) -> float | None:
+    """When the watch job was installed: untagged images older than this are not the watcher's business."""
+    f = LAUNCH_DIR / f"{JOBS['watch']['label']}.plist"
+    return f.stat().st_mtime if f.exists() else None
+
+
 def _photo_named(p: Path) -> bool:
     """Only files named the way phones and Macs name photos/screenshots: a random downloaded image
     (a logo, an avatar) is never swept up."""
@@ -1618,12 +1636,16 @@ def _photo_named(p: Path) -> bool:
 @command("autoadd", "Extract photos/screenshots that arrived in a folder, and route the originals",
          args=[Arg("folder", "where photos arrive (e.g. ~/Downloads, where Taildrop saves)"),
                Arg("--settle", "ignore files modified in the last N seconds (still being written)", type=int,
-                   default=5)],
+                   default=5),
+               Arg("--since", "also take untagged images newer than this Unix time (default: watch install time)",
+                   type=float)],
          writes=True,
          details="Plan: lists the files it would take. Commit: extracts them in place, then routes each original "
                  "like cleanup (quarantine 7 days, attachments, or held) -- the originals leave the folder. Only "
                  "files named like photos/screenshots are touched (Android Screenshot_, WhatsApp Image, macOS "
-                 "Screenshot … at …, IMG_/PXL_/VID_/MVIMG_). Images already known by hash are skipped. The watch "
+                 "Screenshot … at …, IMG_/PXL_/VID_/MVIMG_), plus images with a generic name (a phone share's "
+                 "'image.png') that carry no browser download tag (com.apple.quarantine) and arrived after the "
+                 "watch job was installed. Images already known by hash are skipped. The watch "
                  "LaunchAgent runs this when the folder changes.")
 def cmd_autoadd(a, state: State):
     import time
@@ -1631,9 +1653,18 @@ def cmd_autoadd(a, state: State):
     if not folder.is_dir():
         raise ToolError(f"{folder} is not a folder")
     content = _content_root(state, None, required=True)
+    since = a.since if getattr(a, "since", None) is not None else _watch_since(state)
+
+    def wanted(p: Path) -> bool:
+        if _photo_named(p):
+            return True
+        # Generic names ("image.png") from a phone share: take them only if no browser tagged them as a web
+        # download AND they arrived after the watcher was switched on, so old files are never swept up.
+        return since is not None and p.stat().st_mtime >= since and _download_tag(p) is None
+
     def photo_files():
         return [p for p in sorted(folder.iterdir()) if p.is_file() and p.suffix.lower() in IMAGE_EXTS
-                and not p.name.startswith(".") and _photo_named(p)]
+                and not p.name.startswith(".") and wanted(p)]
 
     # A Taildrop/AirDrop batch keeps writing for a moment after the watch trigger fires. Files still
     # settling are waited out (up to 30 s) instead of skipped, or the last photos of a batch would sit in
