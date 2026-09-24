@@ -301,7 +301,7 @@ unverified URLs); with the clock pinned 1 s before the deadline 0 were due, at t
 
 ## 6a. Classification, duplicate groups, ranking
 
-Categories (built-in rules, first match wins): content first — `payment`, `event` (needs a keyword and a
+Categories (built-in rules, first match wins): `code` (§6c), then content — `payment`, `event` (needs a keyword and a
 date), `form`, `learning`, `health`, `shopping` — then by app — `travel`, `game`, `chat`, `email`, `social`,
 `document`, `system`, `web` — else `uncategorized`. Every note records the rule's reason, e.g.
 `text 'Pendaftaran'; and '20 DECEMBER'`. English and Malay keywords.
