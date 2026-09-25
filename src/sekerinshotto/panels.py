@@ -341,12 +341,16 @@ def keys_for(name: str) -> str:
                 + CONFIRM.format(cmd="confirm {row} --by user", word="yes"),
                 "K\tKEEP this image forever (plan, then confirm)\tterm-hold\t"
                 + CONFIRM.format(cmd="keep {row}", word="yes"),
+                "F\tFORGET this image and its note: to the Trash (plan, then type forget)\tterm-hold\t"
+                + CONFIRM.format(cmd="forget {row}", word="forget"),
                 "D\tALLOW this image's unverified domains: make its URLs links (plan, then confirm)\tterm-hold\t"
                 + CONFIRM.format(cmd="domains allow-item {row}", word="yes")]
     elif name == "ss-quarantine":
         rows = [_note_open(),
                 *_image_keys(),
                 "U\tRESTORE this image (plan, then confirm)\tterm-hold\t" + CONFIRM.format(cmd="restore {row}", word="yes"),
+                "F\tFORGET this image and its note: to the Trash (plan, then type forget)\tterm-hold\t"
+                + CONFIRM.format(cmd="forget {row}", word="forget"),
                 "P\tPURGE images that are due (plan, then type purge)\tterm-hold\t"
                 + CONFIRM.format(cmd="purge", word="purge")]
     if name == "ss-jobs":

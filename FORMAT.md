@@ -5,7 +5,7 @@ vault wrapper manages an Obsidian vault. Neither imports the other. They meet
 only at the files and the JSON described here. Any future ingester (PDF, web
 clip, …) that writes this format plugs into the same wrapper.
 
-Status: draft v0.32.0 — 2026-09-25.
+Status: draft v0.33.0 — 2026-09-25.
 
 ## 1. CLI contract (both tools)
 
@@ -285,6 +285,16 @@ Nothing waits on a human, and every non-standard outcome is logged. `cleanup` mo
   original follows the original, as before.
   `schedule install --job watch --folder DIR --commit` runs it when DIR changes (LaunchAgent WatchPaths,
   30 s throttle). The watch job is opt-in: the default `schedule install` never installs it.
+- `forget ID[,ID…] [--block] [--delete] --commit` removes items entirely — named ids, prefixes or note
+  filenames only, never a search. Plan: every file that would go. Commit: the note, the image wherever it is
+  (inbox, quarantine, held, attachments) and its copies go to the macOS Trash (`--delete`: permanently); the
+  index row, search text, entities and cached Laya answers are deleted; its lines leave `batches/*.jsonl`
+  and `audit/*.jsonl`, so `reindex` cannot bring it back; groups are re-organized (a dissolved hub note is
+  removed unless you wrote in it); FTS is optimized and the database vacuumed; the journal gets one signed
+  `forget` entry (the hash, no text). Earlier journal entries keep file names — it is a signed chain.
+  `--block` appends the hash to `<state>/blocked.txt`: ingest and autoadd then ignore that image
+  (`blocked` in their plans). Panel key `F`, which asks you to type `forget`. The only command that
+  removes an attached image; `<state>/logs/watch.log` keeps the file names of past watcher runs.
 - `restore <id|batch> --commit` moves quarantined images back to their original path, never over an
   existing file. Purged images cannot be restored.
 - An image routed by cleanup is never re-extracted from a new copy: its hash stays in the index.
