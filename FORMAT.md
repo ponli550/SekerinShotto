@@ -5,7 +5,7 @@ vault wrapper manages an Obsidian vault. Neither imports the other. They meet
 only at the files and the JSON described here. Any future ingester (PDF, web
 clip, …) that writes this format plugs into the same wrapper.
 
-Status: draft v0.31.0 — 2026-09-25.
+Status: draft v0.32.0 — 2026-09-25.
 
 ## 1. CLI contract (both tools)
 
@@ -71,7 +71,7 @@ Rules:
 - `id` is the content hash of the source. It is the identity everywhere; paths are not.
 - `source_state`: `present` | `held` | `attached` | `quarantined` | `purged`. After `purged`, the note is the only record.
 - Quarantine lasts exactly 7 days to the second: `purge_after = quarantined_at + 604800 s`, UTC, ISO 8601 with seconds. Purge is eligible only when `now >= purge_after`; it still needs `--commit`.
-- `held`: the image failed the confidence gate. It is kept, never quarantined, and its clock has not started. It becomes eligible only after its confidence is raised or it is confirmed (see §6).
+- `held`: extraction failed (no text, low confidence, undecodable QR). It is kept, never quarantined, and its clock has not started. It becomes eligible only after its confidence is raised or it is confirmed (see §6).
 - `decided_by`: `rule` | `laya` | `llm` | `user`. `verified_by`: `qr` | `crossref` | `known` | `allowed` | `none`
   (`reocr` and `dns` reserved). URL records may also carry `corrected`, `reason`, `joined` (extra lines
   merged) and `flag`: `truncated` | `invalid_tld` | `invalid_host`.
@@ -145,14 +145,14 @@ URL correction (deterministic, offline after `domains update`):
   2 cut-off URLs flagged. Not recoverable: paths faded out by the browser, and OCR misreads inside a path.
 
 Personal allowlist (`<state>/domains/allow.txt`), for real sites too small for the Tranco top 1M:
-- `domains suggest` ranks unverified OCR domains by how many held images they would release.
+- `domains suggest` ranks unverified OCR domains by how many notes they would turn into links.
 - `domains allow D[,D…] --commit` stores registrable domains (Public Suffix List eTLD+1, so
   `27a.onrender.com` vouches for that app only, not all of onrender.com). Refused without the PSL,
   for public suffixes (`com.my`), and for TLDs that do not exist.
 - An allowed domain verifies OCR URLs (`verified_by: allowed`, linked) and is evidence for correcting a
   lookalike (`hackfest2O26.my` → `hackfest2026.my`).
 - Allowing and `domains update` re-verify every stored URL without reading an image, rewrite the notes
-  that changed, and release held images whose last unverified URL is now covered.
+  that changed (the URL becomes a link, the `sekerinshotto/unverified-url` tag goes).
 - `domains unallow` reverts those URLs to `none`; images already quarantined or purged stay where they are.
 - Measured on the sample: allowing 8 suggested domains released 9 of 11 held images (7 quarantined,
   2 attached); the 2 left are the domains deliberately not allowed.
@@ -247,10 +247,15 @@ Nothing waits on a human, and every non-standard outcome is logged. `cleanup` mo
 |---|---|---|---|
 | Read well | none of the below | `<state>/quarantine/<batch>/`, then purged | exactly 604800 s after `quarantined_at` |
 | Visual | text covers < 8 % of the content area, < 300 chars, ≥ 180 gray levels, edge share ≥ 0.03, no decoded QR, category not `system` | `<content>/attachments/`, embedded at the top of its note | none, kept forever |
-| Held | extraction failed, or an OCR URL is still `verified_by: none` without a cut-off flag | `<state>/held/` | none |
+| Held | extraction failed (no text, low confidence, undecodable QR) | `<state>/held/` | none |
 | Diagram | ≥ 14 rows or ≥ 8 columns with a long straight edge, saturation ≤ 0.30, no decoded QR, category not `system`/`game` | `<content>/attachments/` | none, kept forever |
 | Kept | `keep <id> --commit` (anything the rules miss) | `<content>/attachments/` | none |
 
+- **Unverified URLs do not hold (v0.32).** Before, an OCR URL still `verified_by: none` held its image;
+  on the 959-image trial that was 94 of 95 held images, mostly one indie domain each (~90 manual `allow`
+  decisions). Now it is routed like any other (quarantine, or attachments if visual); the note keeps the
+  URL as plain text, never a link, in `urls_unverified`, tagged `sekerinshotto/unverified-url`. Trade-off:
+  after purge the image is gone, so a misread URL can no longer be re-checked against the pixels.
 - Visual rule measured on the sample: catches photos, video frames, camera feeds (14 of 182).
 - Diagram rule, for tables, timetables, formulas and slides whose layout OCR flattens: measured on the
   sample, 17 selected and 16 of them real diagrams on visual check (the miss: a delivery app's price

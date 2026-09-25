@@ -24,8 +24,8 @@ uv run sekerinshotto organize --commit                  # re-apply rules/groups 
 uv run sekerinshotto cleanup --commit                   # route images: quarantine / attachments / held
 uv run sekerinshotto purge --commit                     # delete quarantined images whose 7 days are up
 uv run sekerinshotto retry --commit                     # re-extract held images
-uv run sekerinshotto domains suggest                    # unverified domains holding images back
-uv run sekerinshotto domains allow a.my,b.com --commit  # vouch for real sites; releases held images
+uv run sekerinshotto domains suggest                    # unverified domains, by notes they would link
+uv run sekerinshotto domains allow a.my,b.com --commit  # vouch for real sites; their URLs become links
 uv run sekerinshotto status
 uv run sekerinshotto reindex --commit                   # rebuild the index from manifests + notes
 ```

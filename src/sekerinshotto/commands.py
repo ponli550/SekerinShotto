@@ -570,7 +570,7 @@ def run_cleanup(state: State, con, content: Path, commit: bool, batch_id: str | 
          writes=True,
          details="Read well -> <state>/quarantine/, purged exactly 7 days later (604800 s). Visual (photos, "
                  "video frames; little text, rich pixels, no QR) -> <content>/attachments/, embedded in the "
-                 "note, kept forever. Failed, or with an unverified OCR URL -> <state>/held/, retried, never "
+                 "note, kept forever. Failed extraction -> <state>/held/, retried, never "
                  "auto-deleted. Moves the original image files. Writes AUDIT.md. Exit 2 when images are "
                  "held back: a valid answer, not a failure.")
 def cmd_cleanup(a, state: State):
@@ -770,7 +770,7 @@ def _flag(state: State, a, **changes) -> Result:
          args=[Arg("id", "item id, id prefix (>= 8 hex) or note filename"),
                Arg("--by", "who confirms: llm or user", default="llm")],
          writes=True,
-         details="Sets confirmed_by, which lifts a hold for failed extraction or unverified URLs, then runs "
+         details="Sets confirmed_by, which lifts a hold for failed extraction, then runs "
                  "cleanup so the image moves on (usually to quarantine).")
 def cmd_confirm(a, state: State):
     if a.by not in ("llm", "user"):
@@ -1114,7 +1114,7 @@ def cmd_domains_list(a, state: State):
                    "reference": DomainIndex(state.dir("domains")).info or None})
 
 
-@command("domains suggest", "Unverified domains read by OCR, ranked by how many held images they would release",
+@command("domains suggest", "Unverified domains read by OCR, ranked by how many notes they would turn into links",
          args=[Arg("--limit", "at most N domains", type=int, default=30)],
          details="Candidates for `domains allow`. Check each one is a real site you trust before allowing it; "
                  "an OCR misread of a lookalike would be vouched for too.")

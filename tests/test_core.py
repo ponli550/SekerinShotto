@@ -447,7 +447,7 @@ def _crec(**kw):
 @pytest.mark.parametrize("rec,outcome", [
     (_crec(), "quarantine"),
     (_crec(status="failed", status_reason="no_text"), "hold"),
-    (_crec(entities={"qr": [], "domains": [], "urls": [{"raw": "x.my", "verified_by": "none"}]}), "hold"),
+    (_crec(entities={"qr": [], "domains": [], "urls": [{"raw": "x.my", "verified_by": "none"}]}), "quarantine"),
     (_crec(entities={"qr": [], "domains": [], "urls": [{"raw": "www.ome", "verified_by": "none", "flag": "invalid_tld"}]}), "quarantine"),
     (_crec(entities={"qr": [], "domains": [], "urls": [{"raw": "x.my", "verified_by": "none"}]}, confirmed_by="llm"), "quarantine"),
     (_crec(text_coverage=0.02, text_chars=40), "attach"),                                   # a photo
@@ -574,7 +574,7 @@ def test_allowlist_verifies_and_corrects(dom):
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Apple Vision")
-def test_allow_releases_held_image(tmp_path):
+def test_allow_turns_an_unverified_url_into_a_link(tmp_path):
     import os
     import zxingcpp  # noqa: F401
     img = Image.new("RGB", (1200, 900), "white")
@@ -597,14 +597,18 @@ def test_allow_releases_held_image(tmp_path):
     (doms / "tlds.txt").write_text("COM\nMY\n")
     _run("ingest", str(src), "--content", str(content), "--commit", "--cleanup", env=env)
     st = _run("status", env=env)[1]["data"]
-    assert st["by_source_state"] == {"held": 1}
+    assert st["by_source_state"] == {"quarantined": 1}                   # an unverified URL no longer holds
+    note = next((content / "notes").rglob("*.md"))
+    assert "sekerinshotto/unverified-url" in note.read_text() and "](https://smallclub.my" not in note.read_text()
     assert _run("domains", "suggest", env=env)[1]["data"]["suggestions"][0]["domain"] == "smallclub.my"
     code, bad = _run("domains", "allow", "com.my", env=env)
     assert code == 1 and "public suffix" in bad["error"]
     code, ok = _run("domains", "allow", "27a.onrender.com", env=env)
     assert ok["data"]["would_add"] == ["27a.onrender.com"]                # not all of onrender.com
     code, ok = _run("domains", "allow", "smallclub.my", "--commit", env=env)
-    assert code == 0 and ok["data"]["released"] == {"quarantine": 1} and ok["data"]["held_total"] == 0
+    assert code == 0 and ok["data"]["urls_changed_in"] == 1 and ok["data"]["held_total"] == 0
+    text = note.read_text()
+    assert "](https://smallclub.my" in text and "sekerinshotto/unverified-url" not in text
     note = next((content / "notes").rglob("*.md")).read_text()
     assert "[smallclub.my](https://smallclub.my)" in note and "allowlist" in note
 

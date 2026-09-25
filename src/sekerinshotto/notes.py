@@ -190,7 +190,8 @@ def render(ex: Extraction, ingested: str, existing: str | None = None, org: dict
         "source_state": ex.source_state, "purge_after": ex.purge_after,
         "tags": ["sekerinshotto"] + ([f"sekerinshotto/{ex.status}"] if ex.status != "ok" else [])
                 + ([f"sekerinshotto/{ex.source_state}"] if ex.source_state in ("held", "attached") else [])
-                + ([f"code/{ex.code['lang']}"] if ex.code else []),
+                + ([f"code/{ex.code['lang']}"] if ex.code else [])
+                + (["sekerinshotto/unverified-url"] if any(not _linkable(u) for u in ex.urls) else []),
     }
     foreign: list[str] = []
     user_part = USER_TAIL
