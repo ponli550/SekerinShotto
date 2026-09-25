@@ -44,9 +44,6 @@ def decide(rec: dict) -> tuple[str, str]:
         return "attach", "kept on request"
     if rec["status"] != "ok" and not rec.get("confirmed_by"):
         return "hold", rec.get("status_reason") or "failed"
-    unverified = [u["raw"] for u in rec["entities"]["urls"] if u["verified_by"] == "none" and not u.get("flag")]
-    if unverified and not rec.get("confirmed_by"):
-        return "hold", "unverified URL: " + ", ".join(unverified[:3])
     if rec.get("secrets"):
         # The note is scrubbed, but the image still shows the key: never keep it in the vault.
         return "quarantine", "contains secrets: image purged after 7 days"
@@ -54,6 +51,12 @@ def decide(rec: dict) -> tuple[str, str]:
         return "attach", f"visual: text covers {rec.get('text_coverage', 0):.0%} of the screen"
     if is_diagram(rec):
         return "attach", f"diagram: {rec.get('hlines')} horizontal / {rec.get('vlines')} vertical lines"
+    # An unverified OCR URL no longer holds the image: the note shows it as plain text, never a link, and is
+    # tagged sekerinshotto/unverified-url. Holding 10% of a tech-heavy trial for one-off indie domains cost
+    # ~90 manual allow decisions for little safety the note does not already give.
+    unverified = [u["raw"] for u in rec["entities"]["urls"] if u["verified_by"] == "none" and not u.get("flag")]
+    if unverified:
+        return "quarantine", f"content captured in the note; unverified URL kept as text: {', '.join(unverified[:3])}"
     return "quarantine", "content captured in the note"
 
 
