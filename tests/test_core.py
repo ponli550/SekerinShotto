@@ -1502,3 +1502,11 @@ def test_restore_brings_back_a_copy_of_a_purged_item(tmp_path):
     _run("cleanup", "--commit", env=env)                                       # a restored copy is kept
     _run("autoadd", str(dl), "--since", "0", "--commit", env=env)
     assert again.exists()
+
+
+def test_image_keys_use_image_side_and_keep_preview():
+    for name in ("ss-audit", "ss-notes", "ss-results", "ss-quarantine"):
+        rows = dict(l.split("\t", 1) for l in pv.keys_for(name).split("[row]")[1].split("[direct]")[0].splitlines() if l)
+        assert rows["i"].endswith("\timage-side\tsekerinshotto panel image {row}"), name
+        assert "open \"$(sekerinshotto panel image {row})\"" in rows["e"], name
+    assert "image-side" not in pv.keys_for("ss") and "image-side" not in pv.keys_for("ss-groups")
