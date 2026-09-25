@@ -1508,5 +1508,41 @@ def test_image_keys_use_image_side_and_keep_preview():
     for name in ("ss-audit", "ss-notes", "ss-results", "ss-quarantine"):
         rows = dict(l.split("\t", 1) for l in pv.keys_for(name).split("[row]")[1].split("[direct]")[0].splitlines() if l)
         assert rows["i"].endswith("\timage-side\tsekerinshotto panel image {row}"), name
-        assert "nohup qlmanage -p \"$p\"" in rows["e"] and rows["e"].split("\t")[1] == "term", name
+        assert rows["e"].endswith("\tterm\tsekerinshotto panel quicklook {row} || read -rsn1 -p 'press a key'"), name
     assert "image-side" not in pv.keys_for("ss") and "image-side" not in pv.keys_for("ss-groups")
+
+
+def test_quicklook_starts_in_its_own_session(tmp_path, monkeypatch):
+    """panvim's term split kills its process group on close; Quick Look must not be in it."""
+    from sekerinshotto import commands as cm
+    calls = []
+    monkeypatch.setattr(cm.subprocess, "Popen", lambda *a, **k: calls.append((a, k)))
+    cm._quicklook(tmp_path / "x.png")
+    assert calls[0][0][0] == ["qlmanage", "-p", str(tmp_path / "x.png")] and calls[0][1]["start_new_session"] is True
+
+
+def test_new_session_survives_the_closing_split_while_nohup_does_not(tmp_path):
+    """The actual failure: nvim closes a term split by signalling its process group."""
+    import shutil, time
+    if not shutil.which("nvim"):
+        pytest.skip("nvim not installed")
+    lua = tmp_path / "k.lua"
+    lua.write_text("""vim.cmd('botright 16new')
+local buf, done = vim.api.nvim_get_current_buf(), false
+vim.bo[buf].buftype = 'nofile'; vim.bo[buf].bufhidden = 'wipe'   -- as panvim's term()
+vim.fn.termopen({ 'bash', '-c', vim.env.CMD }, { on_exit = function()
+  vim.schedule(function() pcall(vim.api.nvim_buf_delete, buf, { force = true }); done = true end) end })
+vim.wait(5000, function() return done end)
+vim.wait(500)
+vim.cmd('qa!')
+""")
+    py = f"{sys.executable} -c \"import subprocess; subprocess.Popen(['sleep', '47'], start_new_session=True)\""
+    alive = {}
+    for tag, cmd in (("nohup", "nohup sleep 46 >/dev/null 2>&1 &"), ("session", py)):
+        subprocess.run(["nvim", "--clean", "--headless", "-c", f"luafile {lua}"], env={**__import__("os").environ, "CMD": cmd},
+                       capture_output=True, timeout=30)
+        time.sleep(1)
+        n = "sleep 46" if tag == "nohup" else "sleep 47"
+        alive[tag] = subprocess.run(["pgrep", "-f", n], capture_output=True).returncode == 0
+        subprocess.run(["pkill", "-f", n])
+    assert alive == {"nohup": False, "session": True}

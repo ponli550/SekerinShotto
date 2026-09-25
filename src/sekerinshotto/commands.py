@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
 import json
 import os
 import re
@@ -1145,7 +1146,7 @@ from . import panels as pv  # noqa: E402
 
 
 @command("panel", "Render one read-only panvim panel (counts, reasons, names; never OCR text)",
-         args=[Arg("view", "home | class | concepts | groups | audit | quarantine | notes | results | set | set-row | inbox | path | image"),
+         args=[Arg("view", "home | class | concepts | groups | audit | quarantine | notes | results | set | set-row | inbox | path | image | quicklook"),
                Arg("id", "for path/image: an item id / prefix / note filename, or a group id", required=False),
                Arg("--category", "notes view: only this category")],
          details="What panvim runs on its timer. Reads the index only, never extraction or Laya. "
@@ -1167,6 +1168,13 @@ def cmd_panel(a, state: State):
     if a.view == "set":
         q = pv.set_query(state.root, a.id, a.category)
         return Result({"_text": f"results: {q['query'] or '*'}{' in ' + q['category'] if q['category'] else ''}\n"})
+    if a.view == "quicklook":
+        # Quick Look in its own session. panvim's `term` split SIGTERMs the command's whole process group
+        # when it closes, and nohup only ignores SIGHUP, so a backgrounded qlmanage died at once.
+        # start_new_session setsid()s in the child before Popen returns: no window where the kill lands.
+        img = cmd_panel(argparse.Namespace(**{**vars(a), "view": "image"}), state).data["_text"].strip()
+        _quicklook(Path(img))
+        return Result({"_text": f"Quick Look: {Path(img).name}\n"})
     if a.view in ("path", "image"):
         if not a.id:
             raise ToolError(f"panel {a.view} needs an id")
@@ -1184,6 +1192,11 @@ def cmd_panel(a, state: State):
             raise ToolError(f"no image on disk for {iid[:15]} ({rec.get('source_state')})")
         return Result({"_text": p + "\n"})
     return Result({"_text": pv.render(a.view, con, content, state.root, a.category)})
+
+
+def _quicklook(img: Path) -> None:
+    subprocess.Popen(["qlmanage", "-p", str(img)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
 
 
 @command("panels install", "Create or refresh SekerinShotto's panvim panels and their key maps",
