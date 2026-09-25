@@ -28,6 +28,7 @@ uv run sekerinshotto domains suggest                    # unverified domains, by
 uv run sekerinshotto domains allow a.my,b.com --commit  # vouch for real sites; their URLs become links
 uv run sekerinshotto status
 uv run sekerinshotto reindex --commit                   # rebuild the index from manifests + notes
+uv run sekerinshotto forget 1a2b3c4d --commit           # remove an image + its note entirely (to the Trash)
 ```
 
 OCR misreads such as `docs.qoogle.com` or `Inkd.in` are corrected to the real domain when the evidence

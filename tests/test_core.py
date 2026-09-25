@@ -1553,3 +1553,64 @@ vim.cmd('qa!')
         alive[tag] = subprocess.run(["pgrep", "-f", n], capture_output=True).returncode == 0
         subprocess.run(["pkill", "-f", n])
     assert alive == {"nohup": False, "session": True}
+
+
+# ---------------------------------------------------------------- forget
+@pytest.mark.skipif(sys.platform != "darwin", reason="Apple Vision")
+def test_forget_removes_everything_and_block_ignores_a_resend(sample, tmp_path):
+    import shutil
+    src, content, env = sample
+    keep = tmp_path / "again.png"
+    shutil.copy(next(src.iterdir()), keep)
+    _run("ingest", str(src), "--content", str(content), "--commit", env=env)
+    _run("cleanup", "--commit", env=env)                             # image + its identical copy quarantined
+    note = next((content / "notes").rglob("*.md"))
+    iid = note.stem.split("-")[-1]
+
+    code, plan = _run("forget", iid, env=env)
+    item = plan["data"]["items"][0]
+    assert code == 0 and not plan["data"]["committed"] and len(item["files"]) == 3   # note, image, copy
+    assert note.exists() and all(Path(f).exists() for f in item["files"])          # dry run touches nothing
+
+    code, res = _run("forget", iid, "--block", "--delete", "--commit", env=env)
+    assert code == 0 and res["data"]["forgotten"] == 1 and res["data"]["blocked"] == 1
+    assert not any(Path(f).exists() for f in item["files"])
+    st = Path(env["SEKERINSHOTTO_STATE"])
+    assert _run("status", env=env)[1]["data"]["items"] == 0
+    assert _run("search", "Register", env=env)[1]["data"]["total"] == 0
+    for f in st.rglob("*"):                                           # no OCR text anywhere in state
+        if f.is_file() and f.suffix != ".key":
+            assert b"docs.example.com/form" not in f.read_bytes(), f
+    _run("reindex", "--content", str(content), "--commit", env=env)
+    assert _run("status", env=env)[1]["data"]["items"] == 0          # manifests cannot resurrect it
+    journal = "".join(p.read_text() for p in (st / "journal").glob("*.jsonl"))
+    assert '"op": "forget"' in journal or '"op":"forget"' in journal
+
+    resend = tmp_path / "resend"
+    resend.mkdir()
+    shutil.copy(keep, resend / "again.png")
+    code, again = _run("ingest", str(resend), "--content", str(content), env=env)
+    assert again["data"]["blocked"] == 1 and again["data"]["planned"] == 0
+
+
+def test_forget_moves_to_trash_unless_delete(tmp_path, monkeypatch):
+    from sekerinshotto import commands as cm
+    f = tmp_path / "a.png"
+    f.write_bytes(b"x")
+    assert cm._trash(f, True) == "deleted" and not f.exists()
+    seen = []
+
+    class FM:
+        def trashItemAtURL_resultingItemURL_error_(self, url, _r, _e):
+            seen.append(str(url.path()))
+            return True, None, None
+    monkeypatch.setattr(cm, "_file_manager", lambda: FM())
+    f.write_bytes(b"x")
+    assert cm._trash(f, False) == "trashed" and seen == [str(f)]
+
+
+def test_forget_key_needs_the_word_forget():
+    for name in ("ss-audit", "ss-notes", "ss-results", "ss-quarantine"):
+        f = [l for l in pv.keys_for(name).splitlines() if l.startswith("F\t")]
+        assert len(f) == 1 and '[ "$a" = forget ] && sekerinshotto forget {row} --commit' in f[0], name
+        assert "sekerinshotto forget {row};" in f[0]                     # the plan runs first, never --commit alone

@@ -96,8 +96,12 @@ def cmd_ingest(a, state: State):
     t0 = time.perf_counter()
     todo, skipped, dup_in_batch, seen = [], 0, 0, set()
     copies: dict[str, list[Path]] = {}
+    blocked, n_blocked = _blocked(state), 0
     for p in (getattr(a, "files", None) or iter_images(src, a.limit)):
         fid = sha256_file(p)
+        if fid in blocked:                            # `forget --block`: never ingested again
+            n_blocked += 1
+            continue
         if fid in seen:
             dup_in_batch += 1
             copies.setdefault(fid, []).append(p)
@@ -122,7 +126,7 @@ def cmd_ingest(a, state: State):
             continue
         todo.append((p, fid, "re-extract" if row else "new"))
     plan = {"source": str(src), "content_root": str(content), "state": str(state.root),
-            "planned": len(todo), "skipped_already_extracted": skipped,
+            "planned": len(todo), "skipped_already_extracted": skipped, "blocked": n_blocked,
             "duplicates_in_batch": dup_in_batch,
             "copies_found": sum(len(v) for v in copies.values()),
             "items": [{"file": p.name, "id": fid, "action": act} for p, fid, act in todo]}
@@ -1741,14 +1745,16 @@ def cmd_autoadd(a, state: State):
     cands = [p for p in files if time.time() - p.stat().st_mtime >= a.settle]
     con = state.connect()
     known = {r[0] for r in con.execute("SELECT id FROM items")}
-    hashed = [(p, sha256_file(p)) for p in cands]
+    blocked = _blocked(state)
+    hashed = [(p, h) for p in cands if (h := sha256_file(p)) not in blocked]
     new = [p for p, h in hashed if h not in known]
     # A re-send is a known image that ARRIVED after the watcher was switched on. Known files that were already
     # in the folder (the originals of an earlier `add`, which copies) are the user's files: never swept up.
     resent = [(p, h) for p, h in hashed if h in known and since is not None and p.stat().st_mtime >= since
               and _is_copy(con, p, h)]
     plan = {"folder": str(folder), "now": now_iso(), "photo_named": len(cands), "new": len(new),
-            "already_known": len(cands) - len(new), "resent_copies": len(resent),
+            "already_known": len(hashed) - len(new), "resent_copies": len(resent),
+            "blocked": len(cands) - len(hashed),
             "items": [p.name for p in new[:50]], "copies": [p.name for p, _ in resent[:50]]}
     if not a.commit:
         return Result({"committed": False, **plan},
@@ -2097,3 +2103,137 @@ def cmd_secrets_scrub(a, state: State):
         con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     return Result({"committed": True, "items": items, "manifests": [m.name for m in manifests],
                    "notes_rewritten": rer["notes_written"], "cleanup": res.get("moved")})
+
+
+# ---------------------------------------------------------------- forget
+BLOCKED = "blocked.txt"
+
+
+def _blocked(state: State) -> set[str]:
+    f = state.root / BLOCKED
+    return {l.strip() for l in f.read_text().splitlines() if l.strip() and not l.startswith("#")} if f.exists() else set()
+
+
+def _file_manager():
+    from Foundation import NSFileManager
+    return NSFileManager.defaultManager()
+
+
+def _trash(p: Path, permanent: bool) -> str:
+    """Move one file to the macOS Trash (recoverable until emptied), or delete it with --delete."""
+    if permanent:
+        p.unlink()
+        return "deleted"
+    from Foundation import NSURL
+    ok, _url, err = _file_manager().trashItemAtURL_resultingItemURL_error_(
+        NSURL.fileURLWithPath_(str(p)), None, None)
+    if not ok:
+        raise ToolError(f"could not move {p} to the Trash: {err}")
+    return "trashed"
+
+
+def _forget_files(rec: dict, content: Path) -> list[Path]:
+    """Every file on disk that belongs to this item: its note, its image wherever it sits, its copies."""
+    out = []
+    if rec.get("note_path"):
+        out.append(content / rec["note_path"])
+    img = rec.get("stored_path") or (rec.get("source_path") if rec.get("source_state") == "present" else None)
+    if img:
+        out.append(Path(img))
+    for c in rec.get("copies") or []:
+        if c.get("state") == "quarantined" and c.get("stored_path"):
+            out.append(Path(c["stored_path"]))
+        elif c.get("state") == "present" and c.get("path"):
+            out.append(Path(c["path"]))
+    seen, files = set(), []
+    for p in out:
+        if p.exists() and p.resolve() not in seen:
+            seen.add(p.resolve())
+            files.append(p)
+    return files
+
+
+@command("forget", "Remove images and their notes from SekerinShotto entirely (named items only)",
+         args=[Arg("targets", "item ids, id prefixes (>= 8 hex) or note filenames; never a search", many=True),
+               Arg("--block", "remember the hash: a re-send of this image is then ignored", flag=True),
+               Arg("--delete", "delete the files permanently instead of moving them to the Trash", flag=True)],
+         writes=True,
+         details="Plan: lists every file that would go (the note, the image wherever it is -- inbox, "
+                 "quarantine, held or attachments -- and its copies). Commit: moves them to the macOS Trash "
+                 "(--delete: permanently), removes the item from the index, search, entities and cached ask "
+                 "answers, drops its lines from batch manifests and audit logs so `reindex` cannot bring it "
+                 "back, re-organizes duplicate groups, vacuums the database, and appends one signed journal "
+                 "entry (the hash, no text). The journal's earlier entries keep file names: it is a signed "
+                 "chain. The only command that removes an attached image.")
+def cmd_forget(a, state: State):
+    content = _content_root(state, None, required=True)
+    con = state.connect()
+    ids = []
+    for t in [x for raw in a.targets for x in raw.split(",") if x.strip()]:
+        iid = resolve_id(con, t.strip())
+        if iid not in ids:
+            ids.append(iid)
+    recs = {iid: json.loads(con.execute("SELECT record FROM items WHERE id=?", (iid,)).fetchone()[0]) for iid in ids}
+    items = [{"id": iid, "note": r.get("note_path"), "state": r.get("source_state"), "category": r.get("category"),
+              "group": r.get("group"), "files": [str(p) for p in _forget_files(r, content)]} for iid, r in recs.items()]
+    how = "deleted permanently" if a.delete else "moved to the Trash"
+    if not a.commit:
+        return Result({"committed": False, "items": items, "files": how, "block": bool(a.block)},
+                      human="".join(f"{i['id'][7:19]}  {i['state']}  {i['note']}\n"
+                                    + "".join(f"    {f}\n" for f in i["files"]) for i in items)
+                      + f"files would be {how}; re-run with --commit\n")
+    batch_id = now_iso().replace(":", "-") + "-forget"
+    done, failed = [], []
+    with state.lock():
+        journal = state.journal(batch_id)
+        for iid, rec in recs.items():
+            try:
+                for p in _forget_files(rec, content):
+                    _trash(p, a.delete)
+                    q = p.parent
+                    if q.parent == state.root / "quarantine" and q.is_dir() and not any(q.iterdir()):
+                        q.rmdir()                            # an emptied quarantine batch folder
+            except (OSError, ToolError) as e:
+                failed.append({"id": iid, "error": str(e)})
+                continue
+            con.execute("DELETE FROM entities WHERE item_id=?", (iid,))
+            con.execute("DELETE FROM text_fts WHERE id=?", (iid,))
+            con.execute("DELETE FROM items WHERE id=?", (iid,))
+            if con.execute("SELECT 1 FROM sqlite_master WHERE name='laya_cache'").fetchone():
+                con.execute("DELETE FROM laya_cache WHERE id=?", (iid,))
+            journal.append(op="forget", id=iid, files=how, batch_id=batch_id)
+            done.append(iid)
+        con.commit()
+        gone = set(done)
+        if gone:
+            # History: the manifests are what `reindex` rebuilds from, and audit logs name source paths.
+            for folder in (state.dir("batches"), state.dir("audit")):
+                for f in sorted(folder.glob("*.jsonl")):
+                    lines = f.read_text().splitlines()
+                    keep = [l for l in lines if not (l.strip() and json.loads(l).get("id") in gone)]
+                    if len(keep) != len(lines):
+                        tmp = f.with_suffix(".tmp")
+                        tmp.write_text("".join(l + "\n" for l in keep))
+                        tmp.replace(f)
+            if a.block:
+                f = state.root / BLOCKED
+                have = _blocked(state)
+                with open(f, "a") as fh:
+                    if not f.stat().st_size:
+                        fh.write("# hashes `forget --block` removed; ingest and autoadd ignore them\n")
+                    fh.writelines(i + "\n" for i in done if i not in have)
+            report = apply_organization(state, con, content, journal, state.dir("batches") / f"{batch_id}.jsonl",
+                                        batch_id, now_iso())
+            con.commit()
+            con.execute("INSERT INTO text_fts(text_fts) VALUES('optimize')")
+            con.commit()
+            con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            con.execute("VACUUM")
+            con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        else:
+            report = {}
+    _write_audit(state, con, content)
+    return Result({"committed": True, "forgotten": len(done), "failed": failed, "files": how,
+                   "blocked": len(done) if a.block else 0, "notes_rewritten": report.get("notes_written", 0),
+                   "groups_dissolved": len(report.get("groups_dissolved") or [])},
+                  violation=bool(failed))
