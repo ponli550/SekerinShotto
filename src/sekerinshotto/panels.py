@@ -298,10 +298,15 @@ def _note_open() -> str:
 
 def _image_keys() -> list[str]:
     # i: text art beside the board (panvim image-side; a tmux popup passes no graphics escapes, so real
-    # pixels cannot reach Ghostty from a panel). e: the real pixels, in Preview. `panel image` prints the
-    # path, or fails with the reason (purged, missing), which image-side shows as-is.
-    return ["i\tshow the image beside the board\timage-side\tsekerinshotto panel image {row}",
-            "e\topen the image in Preview\tterm\topen \"$(sekerinshotto panel image {row})\""]
+    # pixels cannot reach Ghostty from a panel, and text art cannot make body text readable).
+    # e: the real pixels in Quick Look, a floating window over the panel (Esc closes). qlmanage blocks
+    # until closed, so it runs under nohup in the background: the `term` split closes at once and a
+    # SIGHUP from that closing pty cannot take Quick Look with it. `panel image` prints the path, or
+    # fails with the reason (purged, missing), shown here until a key is pressed.
+    return ["i\tshow the image beside the board (text art)\timage-side\tsekerinshotto panel image {row}",
+            "e\tview the image full size (Quick Look, Esc closes)\tterm\t"
+            "p=$(sekerinshotto panel image {row} 2>&1) || { echo \"$p\"; read -rsn1 -p 'press a key'; exit 0; }; "
+            "nohup qlmanage -p \"$p\" >/dev/null 2>&1 &"]
 
 
 def keys_for(name: str) -> str:

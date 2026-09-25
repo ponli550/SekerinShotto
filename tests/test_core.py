@@ -1508,5 +1508,5 @@ def test_image_keys_use_image_side_and_keep_preview():
     for name in ("ss-audit", "ss-notes", "ss-results", "ss-quarantine"):
         rows = dict(l.split("\t", 1) for l in pv.keys_for(name).split("[row]")[1].split("[direct]")[0].splitlines() if l)
         assert rows["i"].endswith("\timage-side\tsekerinshotto panel image {row}"), name
-        assert "open \"$(sekerinshotto panel image {row})\"" in rows["e"], name
+        assert "nohup qlmanage -p \"$p\"" in rows["e"] and rows["e"].split("\t")[1] == "term", name
     assert "image-side" not in pv.keys_for("ss") and "image-side" not in pv.keys_for("ss-groups")
