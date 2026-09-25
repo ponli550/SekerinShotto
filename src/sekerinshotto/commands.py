@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import subprocess
 import json
 import os
@@ -1146,7 +1147,7 @@ from . import panels as pv  # noqa: E402
 
 
 @command("panel", "Render one read-only panvim panel (counts, reasons, names; never OCR text)",
-         args=[Arg("view", "home | class | concepts | groups | audit | quarantine | notes | results | set | set-row | inbox | path | image | quicklook"),
+         args=[Arg("view", "home | class | concepts | groups | audit | quarantine | notes | results | set | set-row | inbox | path | image | viewer"),
                Arg("id", "for path/image: an item id / prefix / note filename, or a group id", required=False),
                Arg("--category", "notes view: only this category")],
          details="What panvim runs on its timer. Reads the index only, never extraction or Laya. "
@@ -1168,13 +1169,10 @@ def cmd_panel(a, state: State):
     if a.view == "set":
         q = pv.set_query(state.root, a.id, a.category)
         return Result({"_text": f"results: {q['query'] or '*'}{' in ' + q['category'] if q['category'] else ''}\n"})
-    if a.view == "quicklook":
-        # Quick Look in its own session. panvim's `term` split SIGTERMs the command's whole process group
-        # when it closes, and nohup only ignores SIGHUP, so a backgrounded qlmanage died at once.
-        # start_new_session setsid()s in the child before Popen returns: no window where the kill lands.
-        img = cmd_panel(argparse.Namespace(**{**vars(a), "view": "image"}), state).data["_text"].strip()
-        _quicklook(Path(img))
-        return Result({"_text": f"Quick Look: {Path(img).name}\n"})
+    if a.view in ("viewer", "quicklook"):
+        img = Path(cmd_panel(argparse.Namespace(**{**vars(a), "view": "image"}), state).data["_text"].strip())
+        how = _open_viewer(img, state.root / "cache" / "img")
+        return Result({"_text": f"{how}: {img.name}\n"})
     if a.view in ("path", "image"):
         if not a.id:
             raise ToolError(f"panel {a.view} needs an id")
@@ -1194,9 +1192,32 @@ def cmd_panel(a, state: State):
     return Result({"_text": pv.render(a.view, con, content, state.root, a.category)})
 
 
-def _quicklook(img: Path) -> None:
-    subprocess.Popen(["qlmanage", "-p", str(img)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                     stderr=subprocess.DEVNULL, start_new_session=True)
+# mpv floats on top (window level 3) like the watch panel's pinned player: Quick Look and Preview open
+# BEHIND Ghostty, because macOS will not raise a window that a background process starts. Its own session
+# (setsid before Popen returns) so panvim's closing split, which signals its process group, cannot kill it.
+VIEWER_ARGS = ["--ontop", "--on-all-workspaces", "--image-display-duration=inf", "--keep-open=yes",
+               "--force-window=immediate", "--autofit=90%x90%", "--no-audio", "--osd-level=0",
+               "--title=SekerinShotto · ${filename}"]
+
+
+def _open_viewer(img: Path, cache: Path) -> str:
+    import shutil
+    if shutil.which("mpv"):
+        src = img
+        if img.suffix.lower() in (".heic", ".heif"):                 # mpv's ffmpeg may not decode HEIC
+            cache.mkdir(parents=True, exist_ok=True)
+            src = cache / f"{hashlib.sha256(f'{img}{img.stat().st_mtime_ns}'.encode()).hexdigest()[:16]}.png"
+            if not src.exists():
+                subprocess.run(["sips", "-s", "format", "png", str(img), "--out", str(src)],
+                               capture_output=True, check=False)
+            if not src.exists():
+                src = img
+        cmd, how = ["mpv", *VIEWER_ARGS, str(src)], "mpv (on top, q closes)"
+    else:
+        cmd, how = ["qlmanage", "-p", str(img)], "Quick Look (install mpv to keep it on top)"
+    subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+    return how
 
 
 @command("panels install", "Create or refresh SekerinShotto's panvim panels and their key maps",

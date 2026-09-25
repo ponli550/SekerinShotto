@@ -299,12 +299,12 @@ def _note_open() -> str:
 def _image_keys() -> list[str]:
     # i: text art beside the board (panvim image-side; a tmux popup passes no graphics escapes, so real
     # pixels cannot reach Ghostty from a panel, and text art cannot make body text readable).
-    # e: the real pixels in Quick Look, a floating window over the panel (Esc closes). `panel quicklook`
-    # starts it in its own session so the closing split cannot kill it, or fails with the reason
-    # (purged, missing), shown here until a key is pressed.
+    # e: the real pixels in mpv, pinned on top of the panel like the watch panel's player (q closes).
+    # `panel viewer` starts it in its own session so the closing split cannot kill it, or fails with
+    # the reason (purged, missing), shown here until a key is pressed.
     return ["i\tshow the image beside the board (text art)\timage-side\tsekerinshotto panel image {row}",
-            "e\tview the image full size (Quick Look, Esc closes)\tterm\t"
-            "sekerinshotto panel quicklook {row} || read -rsn1 -p 'press a key'"]
+            "e\tview the image full size, on top (q closes)\tterm\t"
+            "sekerinshotto panel viewer {row} || read -rsn1 -p 'press a key'"]
 
 
 def keys_for(name: str) -> str:

@@ -1508,17 +1508,24 @@ def test_image_keys_use_image_side_and_keep_preview():
     for name in ("ss-audit", "ss-notes", "ss-results", "ss-quarantine"):
         rows = dict(l.split("\t", 1) for l in pv.keys_for(name).split("[row]")[1].split("[direct]")[0].splitlines() if l)
         assert rows["i"].endswith("\timage-side\tsekerinshotto panel image {row}"), name
-        assert rows["e"].endswith("\tterm\tsekerinshotto panel quicklook {row} || read -rsn1 -p 'press a key'"), name
+        assert rows["e"].endswith("\tterm\tsekerinshotto panel viewer {row} || read -rsn1 -p 'press a key'"), name
     assert "image-side" not in pv.keys_for("ss") and "image-side" not in pv.keys_for("ss-groups")
 
 
-def test_quicklook_starts_in_its_own_session(tmp_path, monkeypatch):
-    """panvim's term split kills its process group on close; Quick Look must not be in it."""
+def test_viewer_floats_on_top_in_its_own_session(tmp_path, monkeypatch):
+    """Quick Look opened behind Ghostty; mpv --ontop floats. Own session: the closing split can't kill it."""
     from sekerinshotto import commands as cm
     calls = []
     monkeypatch.setattr(cm.subprocess, "Popen", lambda *a, **k: calls.append((a, k)))
-    cm._quicklook(tmp_path / "x.png")
-    assert calls[0][0][0] == ["qlmanage", "-p", str(tmp_path / "x.png")] and calls[0][1]["start_new_session"] is True
+    monkeypatch.setattr("shutil.which", lambda n: "/opt/homebrew/bin/mpv" if n == "mpv" else None)
+    img = tmp_path / "x.png"
+    Image.new("RGB", (8, 8)).save(img)
+    assert "on top" in cm._open_viewer(img, tmp_path / "cache")
+    argv, kw = calls[0][0][0], calls[0][1]
+    assert argv[0] == "mpv" and "--ontop" in argv and argv[-1] == str(img) and kw["start_new_session"] is True
+    calls.clear()
+    monkeypatch.setattr("shutil.which", lambda n: None)
+    assert "Quick Look" in cm._open_viewer(img, tmp_path / "cache") and calls[0][0][0][0] == "qlmanage"
 
 
 def test_new_session_survives_the_closing_split_while_nohup_does_not(tmp_path):
