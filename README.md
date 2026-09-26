@@ -39,6 +39,8 @@ Notes are sorted into `notes/<category>/` by explainable rules (English and Mala
 and screenshots with the same content — a crop, a re-screenshot, the same page in a viewer — are grouped
 with a hub note in `groups/`, ranked so rank 1 is the most complete copy. Edit `<state>/rules.toml` to change
 the rules; categories set by an LLM or by you are never overridden.
+Photos taken minutes apart (a talk, a training) form a session: its uncategorized slides take the
+category you give any one of them, or the clear majority of the rest.
 
 After extraction the images themselves are not kept: `cleanup` quarantines them for exactly 7 days, then
 `purge` deletes them. Photos and other visual images are kept in the vault as attachments; images that could

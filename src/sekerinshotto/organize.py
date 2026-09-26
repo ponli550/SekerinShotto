@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter, defaultdict
+from datetime import datetime
 from pathlib import Path
 
 from .extract import hamming
@@ -105,6 +106,67 @@ def score(rec: dict) -> tuple[float, str]:
     return round(s, 3), f"QR {qr}, links {links}, {chars} chars, confidence {conf:.2f}, {px / 1e6:.1f} MP"
 
 
+# ---------------------------------------------------------------- sessions
+# A talk, a training or a trip is photographed minutes apart, and most of its slides never name the topic
+# ("Same foundations. New actors."). No keyword rule can reach those; their neighbours can.
+SESSION_GAP_S = 10 * 60       # a new session starts after 10 minutes with no photo from the same source
+SESSION_MIN = 3               # categorized members needed before a majority means anything
+SESSION_SHARE = 0.60          # ...and the share of them that must agree
+
+
+def _t(ts: str) -> datetime:
+    return datetime.fromisoformat(ts[:19])
+
+
+def sessions(items: dict[str, dict]) -> list[list[str]]:
+    """Runs of items from the same source (app, or no app for camera photos) whose consecutive capture
+    times are at most SESSION_GAP_S apart. Only runs of two or more."""
+    by_src: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for iid, rec in items.items():
+        if rec.get("captured_at"):
+            by_src[rec.get("source_app") or ""].append((rec["captured_at"][:19], iid))
+    runs = []
+    for lst in by_src.values():
+        lst.sort()
+        cur = [lst[0]]
+        for prev, nxt in zip(lst, lst[1:]):
+            if (_t(nxt[0]) - _t(prev[0])).total_seconds() > SESSION_GAP_S:
+                runs.append(cur)
+                cur = []
+            cur.append(nxt)
+        runs.append(cur)
+    return [[i for _, i in r] for r in runs if len(r) >= 2]
+
+
+def inherit_sessions(items: dict[str, dict], out: dict[str, dict]) -> None:
+    """Uncategorized members of a session take the category a caller (user, LLM, Laya) set on any member,
+    when those agree; otherwise the majority of categorized members. decided_by `session` is not a
+    write-back: it is recomputed on every organize, so re-tagging the seed moves the whole session."""
+    for members in sessions(items):
+        unc = [i for i in members if out[i]["category"] == "uncategorized" and out[i]["decided_by"] is None]
+        if not unc:
+            continue
+        times = sorted(items[i]["captured_at"][:16].replace("T", " ") for i in members)
+        span = f"{times[0]}–{times[-1][11:]}" if times[0][:10] == times[-1][:10] else f"{times[0]}–{times[-1]}"
+        seeds = [i for i in members if out[i]["decided_by"] in WRITEBACK_BY]
+        cats = Counter(out[i]["category"] for i in seeds)
+        if len(cats) == 1:
+            cat = next(iter(cats))
+            by = Counter(out[i]["decided_by"] for i in seeds).most_common(1)[0][0]
+            why = f"session: set by {by} on {len(seeds)} of {len(members)} photos, {span}"
+        else:
+            labelled = Counter(out[i]["category"] for i in members if out[i]["category"] != "uncategorized")
+            total = sum(labelled.values())
+            if total < SESSION_MIN:
+                continue
+            cat, n = labelled.most_common(1)[0]
+            if n / total < SESSION_SHARE:
+                continue
+            why = f"session: {n} of {total} categorized photos, {span}, are {cat}"
+        for i in unc:
+            out[i].update(category=cat, decided_by="session", why=why)
+
+
 def organize(items: dict[str, dict], rules, content: Path, stopterms: set[str] = frozenset()) -> dict[str, dict]:
     """-> {id: {category, decided_by, why, group, rank, size, score, score_why}}"""
     out = {}
@@ -125,6 +187,8 @@ def organize(items: dict[str, dict], rules, content: Path, stopterms: set[str] =
         sc, sc_why = score(rec)
         out[iid] = {"category": cat, "decided_by": by, "why": why, "group": None, "rank": None,
                     "size": None, "score": sc, "score_why": sc_why}
+
+    inherit_sessions(items, out)
 
     terms = key_terms({i: r.get("_text", "") for i, r in items.items()}, stopterms)
     for i in out:
