@@ -5,7 +5,7 @@ vault wrapper manages an Obsidian vault. Neither imports the other. They meet
 only at the files and the JSON described here. Any future ingester (PDF, web
 clip, …) that writes this format plugs into the same wrapper.
 
-Status: draft v0.36.0 — 2026-09-27.
+Status: draft v0.37.0 — 2026-09-27.
 
 ## 1. CLI contract (both tools)
 
@@ -421,6 +421,23 @@ Naming: `label: <name>` in the hub's frontmatter is the user's (never written by
 `episode label <ep-id | member id> <name> --commit`; `episode list` shows them. A hub whose episode
 dissolved is removed only when unnamed and its user part is empty. On the trial: 8 episodes — the
 69-photo workshop, the 22-photo ODC training (one, across its break), 6 app bursts.
+
+## 6a-3. Topics (implemented, v0.37)
+
+Several per note, as tags, alongside `category` (which still decides the folder until step 3):
+- every matching `[[topic]]` table in the rules (same conditions as a rule; `name` is the topic;
+  several tables may share one): security, jobs, ai, learning, event, finance (payment QR, transfer
+  receipts, DuitNow, invoices — a price alone is not finance), health, shopping, code;
+- a category set by a caller or inherited by a session is also a topic;
+- `topics_added` / `topics_removed` in the note's frontmatter are the user's: kept on every re-run,
+  written by `tag <id> --topic a,b` / `--remove-topic c` (quote-grounded for `--by llm`);
+- a session member with no topic takes the topics the user added on any member, else those on >= 60% of
+  >= 3 members (`topic_why: session: …`).
+Records carry `topics` and `topic_why`; notes carry `topics`, tags `topic/<name>` and a Source line.
+`search`/`list --topic`, `status` `by_topic` / `without_topic`, the categories panel lists topics
+(`l` on `topic/x` opens them). Measured on the 1,049-item trial: 102 notes with two or more topics;
+the workshop reads `security` (+ `event`, `ai`, `jobs` where slides say so); 645 notes have none
+(mostly social and chat screenshots about nothing in the lists).
 
 ## 6b. Scroll sequences
 

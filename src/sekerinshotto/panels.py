@@ -178,6 +178,11 @@ def render(view: str, con, content: Path | None, state_root: Path, category: str
         for cat, n, rules, callers in _q(con, """SELECT category, COUNT(*), SUM(decided_by='rule'),
                 SUM(decided_by IN ('llm','user','laya')) FROM items GROUP BY 1 ORDER BY 2 DESC, 1"""):
             out.append(f"  {cat:<14} {n:>5}   rule {rules or 0:>4}   caller {callers or 0:>3}")
+        topics = _q(con, """SELECT value, COUNT(*) FROM items, json_each(items.record, '$.topics')
+                GROUP BY value ORDER BY 2 DESC, 1""")
+        if topics:
+            out += ["", "topics · several per note (l lists them)"]
+            out += [f"  topic/{t:<20} {n:>5}" for t, n in topics]
     elif view == "concepts":
         c = Counter()
         for (rec,) in _q(con, "SELECT record FROM items WHERE record IS NOT NULL"):
@@ -231,7 +236,10 @@ def render(view: str, con, content: Path | None, state_root: Path, category: str
             q = {"query": "", "category": None}
         words = re.findall(r"[\w'-]+", q.get("query") or "")
         where, params = ["i.record IS NOT NULL"], []
-        if q.get("category"):
+        if q.get("category", "") and q["category"].startswith("topic/"):
+            where.append("EXISTS (SELECT 1 FROM json_each(i.record, '$.topics') WHERE value = ?)")
+            params.append(q["category"][6:])
+        elif q.get("category"):
             where.append("i.category = ?"); params.append(q["category"])
         if q.get("state"):
             where.append("i.source_state = ?"); params.append(q["state"])

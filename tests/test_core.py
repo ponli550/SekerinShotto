@@ -1775,3 +1775,50 @@ def test_episode_label_tags_every_member(tmp_path):
     assert len(notes) == 3 and all('"episode/outsystems"' in n.read_text() for n in notes)
     from sekerinshotto.notes import read_frontmatter
     assert read_frontmatter(hub.read_text())["label"] == "OutSystems" and "## OutSystems · 3 photos" in hub.read_text()
+
+
+# ---------------------------------------------------------------- topics
+def test_every_matching_topic_applies():
+    from sekerinshotto.rules import load_topics, topics_of
+    t = load_topics(Path("/nonexistent"))
+    got = topics_of(t, None, set(), [], "We're hiring a Senior Cloud Security Engineer. Requirements: 5 years "
+                                        "of experience. Malware analysis. Experience with LLMs and RAG pipelines on github.")
+    assert {"jobs", "security", "ai"} <= set(got)
+    assert "finance" not in topics_of(t, None, set(), [], "Workshop fee RM 50.00, seats limited")   # a price alone
+
+
+def test_assign_topics_user_edits_and_session_inheritance():
+    from sekerinshotto.organize import assign_topics
+    items, out = _sess([("a", 0, None, "uncategorized", None), ("b", 3, None, "uncategorized", None),
+                        ("c", 6, None, "uncategorized", None), ("d", 9, None, "security", "rule")])
+    for r in items.values():
+        r.update(entities={"qr": [], "domains": []}, _text="")
+    items["d"]["_text"] = "ransomware incident response"
+    fms = {"a": {"topics_added": ["outsystems"]}, "c": {"topics_removed": ["outsystems"]}}
+    assign_topics(items, out, __import__("sekerinshotto.rules", fromlist=["load_topics"]).load_topics(Path("/x")), fms)
+    assert out["a"]["topics"] == ["outsystems"] and out["a"]["topic_why"]["outsystems"] == "added by user"
+    assert out["b"]["topics"] == ["outsystems"] and out["b"]["topic_why"]["outsystems"].startswith("session")
+    assert out["c"]["topics"] == []                                    # the user removed it here: stays off
+    assert out["d"]["topics"] == ["security"]                          # its own topic: not overwritten
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Apple Vision")
+def test_tag_topic_add_remove_and_filter(sample):
+    src, content, env = sample
+    _run("ingest", str(src), "--content", str(content), "--commit", env=env)
+    note = next((content / "notes").rglob("*.md"))
+    iid = note.stem.split("-")[-1]
+    code, res = _run("tag", iid, "--topic", "ai,outsystems", "--by", "user", "--commit", env=env)
+    assert code == 0 and res["data"]["to"]["topics"] == ["ai", "outsystems"]
+    note = next((content / "notes").rglob("*.md"))
+    text = note.read_text()
+    assert '"topic/ai"' in text and '"topic/outsystems"' in text and "topics_added" in text
+    assert _run("list", "--topic", "outsystems", env=env)[1]["data"]["total"] == 1
+    _run("organize", "--commit", env=env)                                 # survives a re-run
+    assert '"topic/outsystems"' in next((content / "notes").rglob("*.md")).read_text()
+    code, res = _run("tag", iid, "--remove-topic", "outsystems", "--by", "user", "--commit", env=env)
+    text = next((content / "notes").rglob("*.md")).read_text()
+    assert '"topic/outsystems"' not in text and '"topic/ai"' in text
+    assert _run("list", "--topic", "outsystems", env=env)[1]["data"]["total"] == 0
+    code, bad = _run("tag", iid, "--by", "user", env=env)
+    assert code == 1 and "--topic" in bad["error"]

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .extract import hamming
 from .notes import WRITEBACK_BY, read_frontmatter
-from .rules import classify
+from .rules import classify, topics_of
 from .terms import key_terms
 from . import sequences as seqmod
 
@@ -32,7 +32,7 @@ def load_items(con) -> dict[str, dict]:
             "rank": r["rank"], "size": r["group_size"], "terms": rec.get("terms", []),
             "sequence": rec.get("sequence"), "seq_part": rec.get("seq_part"), "seq_size": rec.get("seq_size"),
             "episode": rec.get("episode"), "ep_part": rec.get("ep_part"), "ep_size": rec.get("ep_size"),
-            "ep_label": rec.get("ep_label")}
+            "ep_label": rec.get("ep_label"), "topics": rec.get("topics") or []}
         items[r["id"]] = rec
     for r in con.execute("SELECT id, text FROM text_fts"):
         if r["id"] in items:
@@ -203,14 +203,59 @@ def assign_episodes(items: dict[str, dict], out: dict[str, dict], content: Path)
             out[iid].update(episode=eid, ep_part=part, ep_size=len(members), ep_label=label)
 
 
-def organize(items: dict[str, dict], rules, content: Path, stopterms: set[str] = frozenset()) -> dict[str, dict]:
-    """-> {id: {category, decided_by, why, group, rank, size, score, score_why}}"""
-    out = {}
+def _names(v) -> list[str]:
+    if isinstance(v, str):
+        v = [x for x in re.split(r"[,\s]+", v) if x]
+    return [str(x).strip().lower() for x in (v or []) if str(x).strip()]
+
+
+def assign_topics(items: dict[str, dict], out: dict[str, dict], topic_rules, fms: dict[str, dict]) -> None:
+    """Topics, several per note: every matching topic rule; a category a caller set; the note's own
+    `topics_added` / `topics_removed` (the user's, kept on re-render); then, for members of a session with
+    none, the session's topics (added by the user on any member, else those on >= 60% of >= 3 members)."""
+    added: dict[str, list[str]] = {}
+    for iid, rec in items.items():
+        fm = fms.get(iid, {})
+        found: dict[str, str] = {}
+        if topic_rules:
+            found = topics_of(topic_rules, rec.get("source_app"), {b["type"] for b in rec["entities"]["qr"]},
+                              rec["entities"]["domains"], rec.get("_text", ""), rec.get("code"))
+        o = out[iid]
+        if o["decided_by"] in (*WRITEBACK_BY, "session") and o["category"] != "uncategorized":
+            found.setdefault(o["category"], f"category set by {o['decided_by']}")
+        added[iid] = _names(fm.get("topics_added"))
+        for t in added[iid]:
+            found[t] = "added by user"
+        for t in _names(fm.get("topics_removed")):
+            found.pop(t, None)
+        o["topics"], o["topic_why"] = sorted(found), found
+    for members in sessions(items):
+        bare = [i for i in members if not out[i]["topics"] and not _names(fms.get(i, {}).get("topics_removed"))]
+        if not bare:
+            continue
+        seeded = sorted({t for i in members for t in added[i]})
+        if seeded:
+            inherit = {t: "session: added by user on a member" for t in seeded}
+        else:
+            having = [i for i in members if out[i]["topics"]]
+            if len(having) < SESSION_MIN:
+                continue
+            counts = Counter(t for i in having for t in out[i]["topics"])
+            inherit = {t: f"session: on {n} of {len(having)} photos" for t, n in counts.items()
+                       if n / len(having) >= SESSION_SHARE}
+        for i in bare:
+            out[i]["topics"], out[i]["topic_why"] = sorted(inherit), dict(inherit)
+
+
+def organize(items: dict[str, dict], rules, content: Path, stopterms: set[str] = frozenset(),
+             topic_rules=None) -> dict[str, dict]:
+    """-> {id: {category, decided_by, why, group, rank, size, score, score_why, topics, episode, ...}}"""
+    out, fms = {}, {}
     for iid, rec in items.items():
         cat, why, by = None, None, "rule"
         note = content / rec["_note_path"] if rec.get("_note_path") else None
         if note and note.exists():
-            fm = read_frontmatter(note.read_text())
+            fm = fms[iid] = read_frontmatter(note.read_text())
             if fm.get("decided_by") in WRITEBACK_BY:              # a caller decided; never override
                 ev = fm.get("decided_evidence")
                 cat, by = fm.get("category"), fm["decided_by"]
@@ -226,6 +271,7 @@ def organize(items: dict[str, dict], rules, content: Path, stopterms: set[str] =
 
     inherit_sessions(items, out)
     assign_episodes(items, out, content)
+    assign_topics(items, out, topic_rules, fms)
 
     terms = key_terms({i: r.get("_text", "") for i, r in items.items()}, stopterms)
     for i in out:
@@ -262,5 +308,5 @@ def organize(items: dict[str, dict], rules, content: Path, stopterms: set[str] =
 def changed(rec: dict, org: dict) -> bool:
     p = rec["_prev"]
     keys = ("category", "decided_by", "why", "group", "rank", "size", "terms", "sequence", "seq_part", "seq_size",
-            "episode", "ep_part", "ep_size", "ep_label")
+            "episode", "ep_part", "ep_size", "ep_label", "topics")
     return tuple(p.get(k) for k in keys) != tuple(org.get(k) for k in keys)

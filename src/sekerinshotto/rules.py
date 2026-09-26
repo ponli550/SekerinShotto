@@ -91,6 +91,39 @@ def load(state_root: Path) -> tuple[list[Rule], str]:
     return _compile(tomllib.loads(text), "built-in rules"), "built-in"
 
 
+def _load_raw(state_root: Path) -> tuple[dict, str, dict]:
+    default = tomllib.loads(resources.files(__package__).joinpath("rules_default.toml").read_text())
+    user = state_root / "rules.toml"
+    if user.exists():
+        try:
+            return tomllib.loads(user.read_text()), str(user), default
+        except tomllib.TOMLDecodeError as e:
+            raise ToolError(f"{user}: not valid TOML: {e}")
+    return default, "built-in", default
+
+
+def load_topics(state_root: Path) -> list[Rule]:
+    """[[topic]] tables (name = the topic). A rules.toml without any keeps the built-in topics."""
+    raw, src, default = _load_raw(state_root)
+    tables = raw.get("topic") or default.get("topic") or []
+    for t in tables:
+        if "name" not in t:
+            raise ToolError(f"{src}: a [[topic]] needs a name")
+    return _compile({"rule": [{**t, "category": t["name"]} for t in tables]}, f"{src} topics")
+
+
+def topics_of(topic_rules: list[Rule], app: str | None, qr_types: set[str], domains: list[str], text: str,
+              code: dict | None = None) -> dict[str, str]:
+    """{topic: why} for EVERY matching topic rule (the first reason per topic)."""
+    out: dict[str, str] = {}
+    for r in topic_rules:
+        if r.category not in out:
+            why = r.match(app, qr_types, domains, text, code)
+            if why:
+                out[r.category] = why
+    return out
+
+
 def classify(rules: list[Rule], app: str | None, qr_types: set[str], domains: list[str], text: str,
              code: dict | None = None) -> tuple[str, str]:
     for r in rules:
