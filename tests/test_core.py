@@ -1797,3 +1797,16 @@ def test_tag_topic_add_remove_and_filter(sample):
     assert _run("list", "--topic", "outsystems", env=env)[1]["data"]["total"] == 0
     code, bad = _run("tag", iid, "--by", "user", env=env)
     assert code == 1 and "--topic" in bad["error"]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Apple Vision")
+def test_organize_rewrite_all_refreshes_unchanged_notes(sample):
+    src, content, env = sample
+    _run("ingest", str(src), "--content", str(content), "--commit", env=env)
+    note = next((content / "notes").rglob("*.md"))
+    note.write_text(note.read_text().replace('kind: "web"', 'category: "web"'))     # a note from before kinds
+    assert _run("organize", env=env)[1]["data"]["notes_to_write"] == 0              # nothing "changed"
+    code, res = _run("organize", "--rewrite-all", "--commit", env=env)
+    assert code == 0 and res["data"]["notes_written"] == 1
+    text = next((content / "notes").rglob("*.md")).read_text()
+    assert 'kind: "web"' in text and "\ncategory:" not in text
