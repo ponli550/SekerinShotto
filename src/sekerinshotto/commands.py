@@ -495,23 +495,26 @@ def apply_organization(state: State, con, content: Path, journal, manifest: Path
     return {**summary, "notes_written": written, "dissolved_hubs_kept": kept, "conflicts": conflicts}
 
 
-@command("organize", "Re-apply classification rules, duplicate groups and ranking to every note",
+@command("organize", "Re-apply kind rules, topics, sessions, duplicate groups and ranking to every note",
+         args=[Arg("--rewrite-all", "rewrite every note, not only changed ones (after a format change)", flag=True)],
          writes=True,
-         details="Plan: reports category counts, groups, and which notes would be written or moved. "
-                 "Commit: rewrites only notes whose category, group or rank changed, moving them to "
-                 "notes/<category>/. Categories set by an LLM, the user or Laya (decided_by) are never "
-                 "overridden. Rules come from <state>/rules.toml if present, else the built-in rules. "
+         details="Plan: reports kind counts, groups, and which notes would be written or moved. "
+                 "Commit: rewrites only notes whose kind, topics, group, rank or episode changed, moving them "
+                 "to notes/<kind>/ (--rewrite-all: every note, in place when its folder is right). Kinds and "
+                 "topics set by an LLM, the user or Laya are never overridden. Rules come from "
+                 "<state>/rules.toml if present, else the built-in rules. "
                  "Exit 2 when some notes were skipped because their generated markers are gone.")
 def cmd_organize(a, state: State):
     content = _content_root(state, None, required=True)
     con = state.connect()
+    force = {r[0] for r in con.execute("SELECT id FROM items WHERE record IS NOT NULL")} if a.rewrite_all else set()
     if not a.commit:
         return Result({"committed": False, **apply_organization(state, con, content, None, None, "", now_iso(),
-                                                                 commit=False)})
+                                                                 force=force, commit=False)})
     batch_id = now_iso().replace(":", "-") + "-organize"
     with state.lock():
         report = apply_organization(state, con, content, state.journal(batch_id),
-                                    state.dir("batches") / f"{batch_id}.jsonl", batch_id, now_iso())
+                                    state.dir("batches") / f"{batch_id}.jsonl", batch_id, now_iso(), force=force)
         con.commit()
     conflicts = report.pop("conflicts")
     return Result({"committed": True, "batch_id": batch_id, **report, "conflicts": conflicts},
