@@ -872,7 +872,7 @@ def _filters(a) -> tuple[str, list]:
     if getattr(a, "topic", None):
         where.append("EXISTS (SELECT 1 FROM json_each(i.record, '$.topics') WHERE value = ?)"); params.append(a.topic)
     if getattr(a, "uncategorized", False):
-        where.append("i.category = 'uncategorized'")
+        where.append("(json_array_length(i.record, '$.topics') IS NULL OR json_array_length(i.record, '$.topics') = 0)")
     if getattr(a, "app", None):
         where.append("i.source_app LIKE ?"); params.append(a.app + "%")
     if getattr(a, "since", None):
@@ -950,7 +950,7 @@ def cmd_search(a, state: State):
 
 
 @command("list", "List notes by category or state, newest first; excerpts are redacted",
-         args=[Arg("--uncategorized", "only notes no rule matched (for the calling LLM to tag)", flag=True)]
+         args=[Arg("--uncategorized", "only notes with no topic yet (the calling LLM's tagging queue)", flag=True)]
               + _FILTER_ARGS)
 def cmd_list(a, state: State):
     con = state.connect()

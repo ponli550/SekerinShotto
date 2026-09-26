@@ -5,7 +5,7 @@ vault wrapper manages an Obsidian vault. Neither imports the other. They meet
 only at the files and the JSON described here. Any future ingester (PDF, web
 clip, …) that writes this format plugs into the same wrapper.
 
-Status: draft v0.37.0 — 2026-09-27.
+Status: draft v1.0.0 — 2026-09-27. Breaking: `category` became `kind` + `topics` (§6a-4).
 
 ## 1. CLI contract (both tools)
 
@@ -438,6 +438,28 @@ Records carry `topics` and `topic_why`; notes carry `topics`, tags `topic/<name>
 (`l` on `topic/x` opens them). Measured on the 1,049-item trial: 102 notes with two or more topics;
 the workshop reads `security` (+ `event`, `ai`, `jobs` where slides say so); 645 notes have none
 (mostly social and chat screenshots about nothing in the lists).
+
+## 6a-4. Kinds are the folders (implemented, v1.0 — breaking)
+
+A note's folder is its **kind**: what the image is, decided without reading meaning into the text.
+`notes/<kind>/`, kinds `chat social web email receipt document code slide photo game system screenshot`.
+Order: a caller's `kind` (`tag --kind`, kept on re-runs); `code` and `receipt` (the `[[rule]]` tables,
+first match); a visual image is `photo`; a camera photo (EXIF Apple camera, or an Android camera name
+`IMG_/PXL_/MVIMG_YYYYMMDD_HHMMSS`) with text is `slide`; then the app's kind (the remaining `[[rule]]`
+tables: chat, email, social, document, game, system, web); anything else is `screenshot`. Kinds never
+say "uncategorized". What an image is ABOUT is its topics (§6a-3); every former content category (event,
+security, learning, form, health, shopping, travel, payment -> finance) is a topic now.
+- Frontmatter: `kind` replaces `category` (the old key is dropped on re-render). Records keep `category`
+  equal to the kind as an alias for one version, and add `kind`. `status` has `by_kind` (and `by_category`).
+- A caller's category that is not a kind (`learning` set by the user) becomes that note's `topics_added` on
+  the first re-run, and seeds its session straight away.
+- `tag --category X`: a kind sets `--kind`, anything else adds topic X. `list/search --kind` (`--category`
+  kept as an alias); `list --uncategorized` is now the tagging queue of notes with no topic. `rules suggest`
+  proposes `[[topic]]` tables from topics callers added.
+- Session category inheritance (§6a-1) is gone: kinds are never uncategorized; sessions spread topics.
+- Measured migration of the 1,049-item trial: 460 notes move folder; social 506, screenshot 96, web 91,
+  slide 84, chat 79, photo 66, email 43, receipt 31, document 22, game 16, system 9, code 6. The workshop
+  is 62 slides + 7 photos with topic security; the ODC training 22 slides, all `learning`.
 
 ## 6b. Scroll sequences
 
