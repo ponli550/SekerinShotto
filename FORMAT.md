@@ -5,7 +5,7 @@ vault wrapper manages an Obsidian vault. Neither imports the other. They meet
 only at the files and the JSON described here. Any future ingester (PDF, web
 clip, …) that writes this format plugs into the same wrapper.
 
-Status: draft v0.33.0 — 2026-09-25.
+Status: draft v0.34.0 — 2026-09-26.
 
 ## 1. CLI contract (both tools)
 
@@ -326,9 +326,17 @@ unverified URLs); with the clock pinned 1 s before the deadline 0 were due, at t
 ## 6a. Classification, duplicate groups, ranking
 
 Categories (built-in rules, first match wins): `code` (§6c), then content — `payment`, `event` (needs a keyword and a
-date), `form`, `learning`, `health`, `shopping` — then by app — `travel`, `game`, `chat`, `email`, `social`,
+date), `form`, `security`, `learning`, `health`, `shopping` — then by app — `travel`, `game`, `chat`, `email`, `social`,
 `document`, `system`, `web` — else `uncategorized`. Every note records the rule's reason, e.g.
-`text 'Pendaftaran'; and '20 DECEMBER'`. English and Malay keywords.
+`text 'Pendaftaran'; and '20 DECEMBER'`. English and Malay keywords. `security` (v0.34): one unambiguous term (cybersecurity, malware, ransomware, infostealer, phishing,
+threat hunting/intel, exfiltration, DLP, incident response, DevSecOps, OSINT, dorking, reconnaissance,
+attack surface, CVE-…), or terms from two different families (malware kinds and exploits; attacker tradecraft
+and LaunchDaemons; SOC/SIEM/EDR/MITRE tooling; governance and data protection; credential abuse; hunting
+and detection; data classification). It sits after `event`, so a security meetup poster stays an event, and
+before `learning` and every app rule, so a LinkedIn post about ransomware is `security`, not `social`.
+Measured: a 69-photo cybersecurity workshop went from 58 uncategorized to 40 `security`, 8 `event`,
+21 uncategorized (slides that never name the topic); 40 older items moved to `security`, all on review
+genuinely about security. `health` needs a step COUNT ("8,432 steps"): the bare word matched "next steps".
 
 - Rules live in `rules_default.toml` inside the package; `<state>/rules.toml` replaces them.
   `rules suggest` proposes rules from caller-set categories: a domain rule from >= 2 tags that all agree; an

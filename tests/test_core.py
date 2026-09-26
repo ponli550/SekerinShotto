@@ -1614,3 +1614,20 @@ def test_forget_key_needs_the_word_forget():
         f = [l for l in pv.keys_for(name).splitlines() if l.startswith("F\t")]
         assert len(f) == 1 and '[ "$a" = forget ] && sekerinshotto forget {row} --commit' in f[0], name
         assert "sekerinshotto forget {row};" in f[0]                     # the plan runs first, never --commit alone
+
+
+@pytest.mark.parametrize("text,cat", [
+    ("Data Staging & Encrypted Exfiltration", "security"),                      # one strong term
+    ("Hunting for keychain password abuse\nLook for unauthorized access", "security"),  # two families
+    ("MAXIS | CYBERSECURITY GOVERNANCE, RISK & COMPLIANCE", "security"),
+    ("Search & Dorking: \"Acme Sdn Bhd\"", "security"),
+    ("keychain password reset steps", "uncategorized"),                         # one weak family only
+    ("How documents are chunked, embedded, and stored\npersistence layer", "uncategorized"),
+    ("Next steps: finalise the slides", "uncategorized"),                       # bare 'steps' is not health
+    ("Today 8,432 steps", "health"),
+    ("Cybersecurity meetup · register now · 25 Sep", "event"),                  # an event poster stays an event
+])
+def test_security_and_health_rules(text, cat):
+    from sekerinshotto.rules import classify, load
+    rules, _ = load(Path("/nonexistent"))
+    assert classify(rules, None, set(), [], text)[0] == cat, classify(rules, None, set(), [], text)
