@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -29,7 +30,9 @@ def load_items(con) -> dict[str, dict]:
         rec["_note_path"], rec["_prev"] = r["note_path"], {
             "category": r["category"], "decided_by": r["decided_by"], "why": r["why"], "group": r["group_id"],
             "rank": r["rank"], "size": r["group_size"], "terms": rec.get("terms", []),
-            "sequence": rec.get("sequence"), "seq_part": rec.get("seq_part"), "seq_size": rec.get("seq_size")}
+            "sequence": rec.get("sequence"), "seq_part": rec.get("seq_part"), "seq_size": rec.get("seq_size"),
+            "episode": rec.get("episode"), "ep_part": rec.get("ep_part"), "ep_size": rec.get("ep_size"),
+            "ep_label": rec.get("ep_label")}
         items[r["id"]] = rec
     for r in con.execute("SELECT id, text FROM text_fts"):
         if r["id"] in items:
@@ -109,7 +112,13 @@ def score(rec: dict) -> tuple[float, str]:
 # ---------------------------------------------------------------- sessions
 # A talk, a training or a trip is photographed minutes apart, and most of its slides never name the topic
 # ("Same foundations. New actors."). No keyword rule can reach those; their neighbours can.
-SESSION_GAP_S = 10 * 60       # a new session starts after 10 minutes with no photo from the same source
+SESSION_GAP_S = 10 * 60       # a new session starts after 10 minutes with no screenshot from the same app
+CAMERA_GAP_S = 30 * 60        # camera photos (no app) are taken on purpose at a talk: a break is not an end.
+                              # Measured: the ODC training split in two at a 17-minute break. Bridging by shared
+                              # words failed: unrelated Threads sessions shared more rare words (5-8) than the
+                              # two halves of the training (2).
+EPISODE_MIN_CAMERA = 3        # a session gets an episode hub note from this many camera photos...
+EPISODE_MIN_APP = 5           # ...or this many screenshots from one app
 SESSION_MIN = 3               # categorized members needed before a majority means anything
 SESSION_SHARE = 0.60          # ...and the share of them that must agree
 
@@ -120,17 +129,19 @@ def _t(ts: str) -> datetime:
 
 def sessions(items: dict[str, dict]) -> list[list[str]]:
     """Runs of items from the same source (app, or no app for camera photos) whose consecutive capture
-    times are at most SESSION_GAP_S apart. Only runs of two or more."""
+    times are at most SESSION_GAP_S (CAMERA_GAP_S for camera photos) apart. Only runs of two or more.
+    Members are in capture order."""
     by_src: dict[str, list[tuple[str, str]]] = defaultdict(list)
     for iid, rec in items.items():
         if rec.get("captured_at"):
             by_src[rec.get("source_app") or ""].append((rec["captured_at"][:19], iid))
     runs = []
-    for lst in by_src.values():
+    for src, lst in by_src.items():
         lst.sort()
+        gap = SESSION_GAP_S if src else CAMERA_GAP_S
         cur = [lst[0]]
         for prev, nxt in zip(lst, lst[1:]):
-            if (_t(nxt[0]) - _t(prev[0])).total_seconds() > SESSION_GAP_S:
+            if (_t(nxt[0]) - _t(prev[0])).total_seconds() > gap:
                 runs.append(cur)
                 cur = []
             cur.append(nxt)
@@ -167,6 +178,31 @@ def inherit_sessions(items: dict[str, dict], out: dict[str, dict]) -> None:
             out[i].update(category=cat, decided_by="session", why=why)
 
 
+def label_slug(label: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", str(label).lower()).strip("-")[:40]
+
+
+def assign_episodes(items: dict[str, dict], out: dict[str, dict], content: Path) -> None:
+    """Big enough sessions become episodes: an id (kept from the previous run when most members had it),
+    their order, and the label the user wrote in the hub note (`label:`), which reaches every member."""
+    for o in out.values():
+        o.update(episode=None, ep_part=None, ep_size=None, ep_label=None)
+    taken = set()
+    for members in sorted(sessions(items), key=lambda m: m[0]):
+        camera = not items[members[0]].get("source_app")
+        if len(members) < (EPISODE_MIN_CAMERA if camera else EPISODE_MIN_APP):
+            continue
+        old = Counter(items[i]["_prev"].get("episode") for i in members if items[i]["_prev"].get("episode"))
+        eid = next((e for e, _ in sorted(old.items(), key=lambda kv: (-kv[1], kv[0])) if e not in taken), None)
+        eid = eid or "ep-" + members[0].split(":")[1][:8]
+        taken.add(eid)
+        hub = content / "episodes" / f"{eid}.md"
+        label = read_frontmatter(hub.read_text()).get("label") if hub.exists() else None
+        label = str(label).strip() if label not in (None, "") else None
+        for part, iid in enumerate(members, 1):
+            out[iid].update(episode=eid, ep_part=part, ep_size=len(members), ep_label=label)
+
+
 def organize(items: dict[str, dict], rules, content: Path, stopterms: set[str] = frozenset()) -> dict[str, dict]:
     """-> {id: {category, decided_by, why, group, rank, size, score, score_why}}"""
     out = {}
@@ -189,6 +225,7 @@ def organize(items: dict[str, dict], rules, content: Path, stopterms: set[str] =
                     "size": None, "score": sc, "score_why": sc_why}
 
     inherit_sessions(items, out)
+    assign_episodes(items, out, content)
 
     terms = key_terms({i: r.get("_text", "") for i, r in items.items()}, stopterms)
     for i in out:
@@ -224,5 +261,6 @@ def organize(items: dict[str, dict], rules, content: Path, stopterms: set[str] =
 
 def changed(rec: dict, org: dict) -> bool:
     p = rec["_prev"]
-    keys = ("category", "decided_by", "why", "group", "rank", "size", "terms", "sequence", "seq_part", "seq_size")
+    keys = ("category", "decided_by", "why", "group", "rank", "size", "terms", "sequence", "seq_part", "seq_size",
+            "episode", "ep_part", "ep_size", "ep_label")
     return tuple(p.get(k) for k in keys) != tuple(org.get(k) for k in keys)

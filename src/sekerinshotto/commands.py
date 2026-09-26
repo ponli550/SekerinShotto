@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import hashlib
 import subprocess
 import json
@@ -18,7 +19,7 @@ from .contract import (AGENT_CONTRACT, COMMIT_ARG, COMMON_ARGS, EXIT_CODES, REGI
                        CONTRACT_VERSION, Arg, Result, ToolError, command)
 from .extract import EXTRACTOR_VERSION, domain_of, extract, iter_images, sha256_file
 from .notes import (NoteConflict, extraction_from_record, manifest_record, note_relpath, render, render_group,
-                    render_sequence,
+                    render_episode, render_sequence,
                     text_from_note, user_part_is_empty)
 from .organize import changed, load_items, organize
 from .rules import load as load_rules
@@ -420,6 +421,49 @@ def apply_organization(state: State, con, content: Path, journal, manifest: Path
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(body)
                 journal.append(op="update" if existing else "create", id=sid, path=str(path), batch_id=batch_id)
+        eps: dict[str, list[str]] = {}
+        for i, o in org.items():
+            if o.get("episode"):
+                eps.setdefault(o["episode"], []).append(i)
+        from .sequences import content_lines
+        for eid, ids in eps.items():
+            ordered = sorted(ids, key=lambda i: org[i]["ep_part"])
+            members, shown = [], {}
+            for i in ordered:
+                g = org[i]["group"]
+                if g and g in shown:
+                    if stems.get(i, i) != shown[g]["stem"]:
+                        shown[g]["also"].append(stems.get(i, i))
+                    continue
+                best = min((j for j in ordered if org[j]["group"] == g), key=lambda j: org[j]["rank"]) if g else i
+                m = {"stem": stems.get(best, best), "time": (items[i].get("captured_at") or "")[11:16],
+                     "lines": content_lines(items[best], items[best].get("_text", "")),
+                     "also": [stems.get(i, i)] if best != i else []}
+                members.append(m)
+                if g:
+                    shown[g] = m
+            times = [items[i]["captured_at"][:16].replace("T", " ") for i in ordered]
+            span = times[0] + ("–" + times[-1][11:] if times[0][:10] == times[-1][:10] else "–" + times[-1])
+            meta = {"size": len(ordered), "span": span, "source": items[ordered[0]].get("source_app") or "camera",
+                    "category": Counter(org[i]["category"] for i in ordered).most_common(1)[0][0],
+                    "label": org[ordered[0]].get("ep_label")}
+            path = content / "episodes" / f"{eid}.md"
+            existing = path.read_text() if path.exists() else None
+            try:
+                body = render_episode(eid, members, meta, existing)
+            except NoteConflict:
+                conflicts.append({"id": eid, "note": f"episodes/{eid}.md"})
+                continue
+            if body != existing:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(body)
+                journal.append(op="update" if existing else "create", id=eid, path=str(path), batch_id=batch_id)
+        prev_eps = {r["_prev"].get("episode") for r in items.values() if r["_prev"].get("episode")}
+        for eid in sorted(prev_eps - set(eps)):
+            path = content / "episodes" / f"{eid}.md"
+            if path.exists() and user_part_is_empty(path.read_text()) and not read_frontmatter(path.read_text()).get("label"):
+                path.unlink()
+                journal.append(op="delete", id=eid, path=str(path), batch_id=batch_id)
         prev_seqs = {r["_prev"].get("sequence") for r in items.values() if r["_prev"].get("sequence")}
         for sid in sorted(prev_seqs - set(seqs)):
             path = content / "sequences" / f"{sid}.md"
@@ -1184,6 +1228,8 @@ def cmd_panel(a, state: State):
             return Result({"_text": str(content / "groups" / f"{a.id}.md") + "\n"})
         if a.view == "path" and a.id.startswith("seq-"):
             return Result({"_text": str(content / "sequences" / f"{a.id}.md") + "\n"})
+        if a.view == "path" and a.id.startswith("ep-"):
+            return Result({"_text": str(content / "episodes" / f"{a.id}.md") + "\n"})
         iid = resolve_id(con, a.id)
         r = con.execute("SELECT note_path, record FROM items WHERE id=?", (iid,)).fetchone()
         if a.view == "path":
@@ -2237,3 +2283,75 @@ def cmd_forget(a, state: State):
                    "blocked": len(done) if a.block else 0, "notes_rewritten": report.get("notes_written", 0),
                    "groups_dissolved": len(report.get("groups_dissolved") or [])},
                   violation=bool(failed))
+
+
+# ---------------------------------------------------------------- episodes
+def _episode_rows(con) -> dict[str, list[dict]]:
+    eps: dict[str, list[dict]] = {}
+    for (raw,) in con.execute("SELECT record FROM items WHERE record IS NOT NULL"):
+        r = json.loads(raw)
+        if r.get("episode"):
+            eps.setdefault(r["episode"], []).append(r)
+    return eps
+
+
+@command("episode list", "Episodes: photos or screenshots taken together (a talk, a training, a burst)",
+         details="A session (same source; consecutive captures <= 10 min apart, 30 min for camera photos) with "
+                 ">= 3 camera photos or >= 5 screenshots from one app. Each has a hub note in <content>/episodes/.")
+def cmd_episode_list(a, state: State):
+    con = state.connect()
+    out = []
+    for eid, rs in sorted(_episode_rows(con).items(), key=lambda kv: min(r.get("captured_at") or "" for r in kv[1])):
+        rs.sort(key=lambda r: r.get("ep_part") or 0)
+        out.append({"episode": eid, "label": rs[0].get("ep_label"), "size": len(rs),
+                    "from": rs[0].get("captured_at"), "to": rs[-1].get("captured_at"),
+                    "source": rs[0].get("source_app") or "camera",
+                    "category": Counter(r.get("category") for r in rs).most_common(1)[0][0]})
+    return Result({"episodes": out},
+                  human="".join(f"{e['episode']:<12} {(e['label'] or '-'):<18} {e['size']:>3}  {e['from'] or ''}  "
+                                f"{e['source']:<24} {e['category']}\n" for e in out))
+
+
+@command("episode label", "Name an episode; every member is tagged episode/<name>",
+         args=[Arg("target", "an episode id (ep-…), or any member's id / id prefix / note filename"),
+               Arg("label", "the name, e.g. outsystems; empty string removes it")],
+         writes=True,
+         details="Writes `label:` in the episode's hub note (you can also edit it there by hand), then re-organizes "
+                 "so every member's note carries episode_label and the tag episode/<name>.")
+def cmd_episode_label(a, state: State):
+    from .notes import _split, set_frontmatter
+    content = _content_root(state, None, required=True)
+    con = state.connect()
+    if a.target.startswith("ep-"):
+        eid = a.target
+    else:
+        iid = resolve_id(con, a.target)
+        eid = json.loads(con.execute("SELECT record FROM items WHERE id=?", (iid,)).fetchone()[0]).get("episode")
+        if not eid:
+            raise ToolError(f"{iid[:15]} is not part of an episode (see `episode list`)")
+    hub = content / "episodes" / f"{eid}.md"
+    if not hub.exists():
+        raise ToolError(f"no episode {eid} (see `episode list`)")
+    before = read_frontmatter(hub.read_text()).get("label")
+    label = a.label.strip()
+    plan = {"episode": eid, "from": before, "to": label or None,
+            "members": sum(1 for r in _episode_rows(con).get(eid, []))}
+    if not a.commit:
+        return Result({"committed": False, **plan})
+    batch_id = now_iso().replace(":", "-") + "-episode"
+    with state.lock():
+        journal = state.journal(batch_id)
+        text = hub.read_text()
+        if label:
+            text = set_frontmatter(text, {"label": label})
+        else:
+            blocks, body = _split(text)
+            text = "---\n" + "\n".join(raw for k, raw in blocks if k != "label") + "\n---\n" + body
+        hub.write_text(text)
+        journal.append(op="label", id=eid, path=str(hub), label=label or None, batch_id=batch_id)
+        ids = {r["id"] for r in _episode_rows(con).get(eid, [])}
+        report = apply_organization(state, con, content, journal, state.dir("batches") / f"{batch_id}.jsonl",
+                                    batch_id, now_iso(), force=ids)
+        con.commit()
+    return Result({"committed": True, **plan, "notes_rewritten": report["notes_written"],
+                   "conflicts": report["conflicts"]}, violation=bool(report["conflicts"]))

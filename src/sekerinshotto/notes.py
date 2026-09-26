@@ -15,7 +15,7 @@ USER_TAIL = "\n\n## Notes\n\n"
 OWNED_KEYS = ["id", "ingester", "ingester_version", "source_type", "source_app", "captured_at",
               "ingested", "status", "status_reason", "category", "decided_by", "urls", "urls_unverified", "urls_corrected", "domains",
               "qr", "group", "rank", "group_size", "members", "source_state", "purge_after", "decided_evidence", "terms", "sequence", "seq_part", "seq_size",
-              "code_language", "code_imports", "camera_model", "tags"]
+              "code_language", "code_imports", "camera_model", "episode", "episode_label", "span", "source", "tags"]
 WRITEBACK_KEYS = ("category", "decided_by", "decided_evidence")   # kept when a caller decided them
 WRITEBACK_BY = ("llm", "user", "laya")
 _SKIP_PKG = {"com", "org", "net", "my", "io", "co", "app", "android", "apple"}
@@ -139,6 +139,10 @@ def generated_body(ex: Extraction, org: dict | None = None) -> str:
     if org and org.get("sequence"):
         out.append("## Sequence")
         out.append(f"[[{org['sequence']}]] · part {org['seq_part']} of {org['seq_size']} of one scrolled page")
+    if org and org.get("episode"):
+        out.append("## Episode")
+        name = f" · **{org['ep_label']}**" if org.get("ep_label") else ""
+        out.append(f"[[{org['episode']}]]{name} · photo {org['ep_part']} of {org['ep_size']} taken together")
     out.append("## Source")
     src = [f"- category: **{org['category']}** — {org.get('why') or ''}"] if org else []
     src.append(f"- file: `{ex.path.name}`")
@@ -179,6 +183,7 @@ def render(ex: Extraction, ingested: str, existing: str | None = None, org: dict
         "group": org.get("group"), "rank": org.get("rank"), "group_size": org.get("size"),
         "terms": org.get("terms") or [],
         "sequence": org.get("sequence"), "seq_part": org.get("seq_part"), "seq_size": org.get("seq_size"),
+        "episode": org.get("episode"), "episode_label": org.get("ep_label"),
         "urls": [u["url"] for u in ex.urls if _linkable(u)],
         # no scheme, so Obsidian's Properties panel does not turn a misread into a link
         "urls_unverified": [u["url"].split("://", 1)[1] for u in ex.urls if not _linkable(u)],
@@ -191,7 +196,8 @@ def render(ex: Extraction, ingested: str, existing: str | None = None, org: dict
         "tags": ["sekerinshotto"] + ([f"sekerinshotto/{ex.status}"] if ex.status != "ok" else [])
                 + ([f"sekerinshotto/{ex.source_state}"] if ex.source_state in ("held", "attached") else [])
                 + ([f"code/{ex.code['lang']}"] if ex.code else [])
-                + (["sekerinshotto/unverified-url"] if any(not _linkable(u) for u in ex.urls) else []),
+                + (["sekerinshotto/unverified-url"] if any(not _linkable(u) for u in ex.urls) else [])
+                + ([f"episode/{_label_tag(org.get('ep_label'))}"] if org.get("ep_label") and _label_tag(org.get("ep_label")) else []),
     }
     foreign: list[str] = []
     user_part = USER_TAIL
@@ -228,6 +234,8 @@ def manifest_record(ex: Extraction, batch_id: str, note_path: str, source_state:
         "group": org.get("group"), "rank": org.get("rank"), "group_size": org.get("size"),
         "terms": org.get("terms") or [],
         "sequence": org.get("sequence"), "seq_part": org.get("seq_part"), "seq_size": org.get("seq_size"),
+        "episode": org.get("episode"), "ep_part": org.get("ep_part"), "ep_size": org.get("ep_size"),
+        "ep_label": org.get("ep_label"),
         "status": ex.status, "status_reason": ex.status_reason,
         "entities": {"qr": ex.barcodes, "urls": ex.urls, "domains": ex.domains},
         "code": ex.code, "camera_model": ex.camera_model,
@@ -283,6 +291,44 @@ def render_group(gid: str, members: list[dict], existing: str | None = None) -> 
     body = [START, f"## Duplicate group · {len(members)} screenshots",
             "Ranked by information content; rank 1 is the most complete copy.", ""]
     body += [f"{m['rank']}. [[{m['stem']}]] · {m['score_why']}" for m in members]
+    body.append(END)
+    user_part, foreign = USER_TAIL, []
+    if existing is not None:
+        blocks, old_body = _split(existing)
+        if START not in old_body or END not in old_body:
+            raise NoteConflict("generated markers missing")
+        foreign = [raw for k, raw in blocks if k not in OWNED_KEYS]
+        user_part = old_body.split(END, 1)[1]
+    lines = [f"{k}: {_y(v)}" for k, v in fm.items()]
+    return "---\n" + "\n".join(lines + foreign) + "\n---\n\n" + "\n".join(body) + user_part
+
+
+def _label_tag(label) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", str(label).lower()).strip("-")[:40]
+
+
+def render_episode(eid: str, members: list[dict], meta: dict, existing: str | None = None) -> str:
+    """Hub note for one episode (a talk, a training, a burst from one app). members: [{stem, time, lines,
+    also}] in capture order; a photo of a slide already shown is folded into `also` of the first one.
+    `label:` in this note's frontmatter is the user's: never written here, read back by organize."""
+    fm = {"id": eid, "ingester": "sekerinshotto", "ingester_version": __version__, "source_type": "episode",
+          "members": meta["size"], "span": meta["span"], "source": meta["source"], "category": meta["category"],
+          "tags": ["sekerinshotto", "sekerinshotto/episode"]
+                  + ([f"episode/{_label_tag(meta['label'])}"] if meta.get("label") and _label_tag(meta["label"]) else [])}
+    title = meta.get("label") or f"{meta['source']} · {meta['span']}"
+    body = [START, f"## {title} · {meta['size']} {'photos' if meta['source'] == 'camera' else 'screenshots'}"]
+    if not meta.get("label"):
+        body += ["", f"Name it: add `label: <name>` to this note's frontmatter, or run "
+                     f"`sekerinshotto episode label {eid} <name> --commit`. Every member is then tagged."]
+    body.append("")
+    for n, m in enumerate(members, 1):
+        also = f" · also [[{']], [['.join(m['also'])}]]" if m.get("also") else ""
+        body.append(f"{n}. {m['time']} · [[{m['stem']}]]{also}")
+    body += ["", "## Text, in order", ""]
+    for m in members:
+        if not m.get("lines"):
+            continue
+        body += [f"### {m['time']} · [[{m['stem']}]]", "", _fence("\n".join(m["lines"])), ""]
     body.append(END)
     user_part, foreign = USER_TAIL, []
     if existing is not None:

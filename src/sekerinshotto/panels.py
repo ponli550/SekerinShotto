@@ -199,6 +199,17 @@ def render(view: str, con, content: Path | None, state_root: Path, category: str
         if seqs:
             out += ["", "scroll sequences · stitched in page order"]
             out += [f"  {sid:<13} {n:>2} parts" for sid, n in sorted(seqs.items())]
+        eps: dict[str, list[dict]] = {}
+        for (rec,) in _q(con, "SELECT record FROM items WHERE record IS NOT NULL"):
+            r = json.loads(rec)
+            if r.get("episode"):
+                eps.setdefault(r["episode"], []).append(r)
+        if eps:
+            out += ["", "episodes · taken together (a talk, a training) · name one: episode label <id> <name>"]
+            for eid, rs in sorted(eps.items(), key=lambda kv: min(r.get("captured_at") or "" for r in kv[1])):
+                label = rs[0].get("ep_label") or "-"
+                when = min(r.get("captured_at") or "" for r in rs)[:16].replace("T", " ")
+                out.append(f"  {eid:<13} {len(rs):>2} photos  {when}  {label}")
     elif view == "audit":
         out += ["held and kept images · reasons, never content", ""]
         for iid, st, reason, att, note in _q(con, """SELECT substr(id,8,8), source_state, hold_reason,
