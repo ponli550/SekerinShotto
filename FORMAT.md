@@ -5,7 +5,7 @@ vault wrapper manages an Obsidian vault. Neither imports the other. They meet
 only at the files and the JSON described here. Any future ingester (PDF, web
 clip, …) that writes this format plugs into the same wrapper.
 
-Status: draft v0.35.0 — 2026-09-27.
+Status: draft v0.36.0 — 2026-09-27.
 
 ## 1. CLI contract (both tools)
 
@@ -398,7 +398,9 @@ categories, group ids and files.
 
 A talk, a training or a trip is photographed minutes apart, and most slides never name the topic, so
 no keyword rule reaches them. A **session** is a run of items from the same source (app, or no app for
-camera photos) whose consecutive capture times are at most 10 minutes apart. After the rules:
+camera photos) whose consecutive capture times are at most 10 minutes apart — 30 minutes for camera
+photos, which you take on purpose at a talk (the ODC training split in two at a 17-minute break; bridging
+by shared words failed, unrelated Threads sessions shared more rare words than its two halves). After the rules:
 - if callers (`user`, `llm`, `laya`) categorized members and all agree, every **uncategorized** member
   takes that category: `why: session: set by user on 1 of 22 photos, 2026-04-16 12:03–12:58`;
 - otherwise, with at least 3 categorized members of which at least 60% agree, uncategorized members take
@@ -408,6 +410,17 @@ Categorized members never change. `decided_by: session` is not a write-back: it 
 moves them all. `rules suggest` ignores session decisions (they are not evidence). Measured on the trial:
 21 workshop slides left by the rules became `security`; a 22-photo training with one categorized photo
 stays uncategorized until tagged (too few for a majority).
+
+## 6a-2. Episodes (implemented, v0.36)
+
+A session with >= 3 camera photos, or >= 5 screenshots from one app, is an **episode** with a hub note
+`<content>/episodes/<ep-id>.md`: members in capture order, then their text in order (a slide photographed
+twice appears once, `also [[copy]]`). Members carry `episode`, `episode_label`, a `## Episode` section, and,
+once named, the tag `episode/<label>`. The id is kept from the previous run when most members had it.
+Naming: `label: <name>` in the hub's frontmatter is the user's (never written by organize), or
+`episode label <ep-id | member id> <name> --commit`; `episode list` shows them. A hub whose episode
+dissolved is removed only when unnamed and its user part is empty. On the trial: 8 episodes — the
+69-photo workshop, the 22-photo ODC training (one, across its break), 6 app bursts.
 
 ## 6b. Scroll sequences
 
@@ -426,6 +439,14 @@ stitched into one readable text.
   order. On the 182-screenshot sample: 0 sequences; a visual check of the closest same-app pairs found no
   clean scrolls (media viewers swiping between images, different chats; one sleep report scrolled up
   shares a single line, below the bar). Precision on real scrolled screenshots is therefore unmeasured.
+- Matching and joining (v0.36, `stitch.py`): lines at the same place at the top or bottom of BOTH
+  screenshots are the app's fixed header and bottom bar ("My Network / Post / Jobs"); they are set aside
+  before matching and kept out of the joined text, since the 3-line edge rule rejected every scroll with
+  a bar. Lines match when >= 90% similar with identical digits ("compler incidenis" = "complex incidents";
+  "paragraph 00" != "paragraph 09"). A line among the last 30 joined lines is not repeated (a feed repeats a
+  post's header), and short lines made only of feed buttons (like · comment · repost · send · view activity
+  · top) are dropped. Measured on the 1,049-item trial: sequences 1 -> 6; the one that existed (a Threads
+  job post) lost its button lines and a repeated header and reads straight through.
 
 ## 7. Laya — query layer, after everything (implemented)
 
