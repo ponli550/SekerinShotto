@@ -5,7 +5,7 @@ vault wrapper manages an Obsidian vault. Neither imports the other. They meet
 only at the files and the JSON described here. Any future ingester (PDF, web
 clip, …) that writes this format plugs into the same wrapper.
 
-Status: draft v0.34.0 — 2026-09-26.
+Status: draft v0.35.0 — 2026-09-27.
 
 ## 1. CLI contract (both tools)
 
@@ -72,7 +72,7 @@ Rules:
 - `source_state`: `present` | `held` | `attached` | `quarantined` | `purged`. After `purged`, the note is the only record.
 - Quarantine lasts exactly 7 days to the second: `purge_after = quarantined_at + 604800 s`, UTC, ISO 8601 with seconds. Purge is eligible only when `now >= purge_after`; it still needs `--commit`.
 - `held`: extraction failed (no text, low confidence, undecodable QR). It is kept, never quarantined, and its clock has not started. It becomes eligible only after its confidence is raised or it is confirmed (see §6).
-- `decided_by`: `rule` | `laya` | `llm` | `user`. `verified_by`: `qr` | `crossref` | `known` | `allowed` | `none`
+- `decided_by`: `rule` | `session` | `laya` | `llm` | `user`. `verified_by`: `qr` | `crossref` | `known` | `allowed` | `none`
   (`reocr` and `dns` reserved). URL records may also carry `corrected`, `reason`, `joined` (extra lines
   merged) and `flag`: `truncated` | `invalid_tld` | `invalid_host`.
 - Secrets (Wi-Fi passwords) are redacted before this file is written: `"payload": "WIFI:S:home;T:WPA;P:<redacted>"`.
@@ -393,6 +393,21 @@ categories, group ids and files.
   invent them. `{` read as `f` and backticks read as quotes are not repaired. Proportional fonts make
   indentation approximate. Measured on Menlo renders: Python 7/8 lines exact, Go and TypeScript exact
   except one dropped closing-bracket line each.
+
+## 6a-1. Sessions (implemented, v0.35)
+
+A talk, a training or a trip is photographed minutes apart, and most slides never name the topic, so
+no keyword rule reaches them. A **session** is a run of items from the same source (app, or no app for
+camera photos) whose consecutive capture times are at most 10 minutes apart. After the rules:
+- if callers (`user`, `llm`, `laya`) categorized members and all agree, every **uncategorized** member
+  takes that category: `why: session: set by user on 1 of 22 photos, 2026-04-16 12:03–12:58`;
+- otherwise, with at least 3 categorized members of which at least 60% agree, uncategorized members take
+  the majority: `why: session: 33 of 41 categorized photos, 2026-09-25 20:26–21:25, are security`.
+Categorized members never change. `decided_by: session` is not a write-back: it is recomputed on every
+`organize`, so one `tag <id> --category C --by user --commit` categorizes a whole talk, and re-tagging it
+moves them all. `rules suggest` ignores session decisions (they are not evidence). Measured on the trial:
+21 workshop slides left by the rules became `security`; a 22-photo training with one categorized photo
+stays uncategorized until tagged (too few for a majority).
 
 ## 6b. Scroll sequences
 

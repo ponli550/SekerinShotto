@@ -1631,3 +1631,49 @@ def test_security_and_health_rules(text, cat):
     from sekerinshotto.rules import classify, load
     rules, _ = load(Path("/nonexistent"))
     assert classify(rules, None, set(), [], text)[0] == cat, classify(rules, None, set(), [], text)
+
+
+# ---------------------------------------------------------------- sessions
+def _sess(spec):
+    """spec: [(id, minute, app, category, decided_by)] -> items, out as organize() builds them."""
+    items, out = {}, {}
+    for iid, minute, app, cat, by in spec:
+        items[iid] = {"captured_at": f"2026-04-16T12:{minute:02d}:00" if minute < 60 else f"2026-04-16T13:{minute - 60:02d}:00",
+                      "source_app": app}
+        out[iid] = {"category": cat, "decided_by": by, "why": None}
+    return items, out
+
+
+def test_session_majority_fills_uncategorized_slides():
+    from sekerinshotto.organize import inherit_sessions
+    items, out = _sess([("a", 0, None, "security", "rule"), ("b", 4, None, "security", "rule"),
+                        ("c", 8, None, "security", "rule"), ("d", 12, None, "uncategorized", None),
+                        ("e", 20, None, "uncategorized", None),     # 8 min after d: same session (gap rule)
+                        ("f", 45, None, "uncategorized", None),     # 25 min gap: a new session, left alone
+                        ("g", 5, "com.whatsapp", "uncategorized", None)])   # other source: not in it
+    inherit_sessions(items, out)
+    assert [out[i]["category"] for i in "defg"] == ["security", "security", "uncategorized", "uncategorized"]
+    assert out["d"]["decided_by"] == "session" and out["d"]["why"].startswith("session: 3 of 3 categorized photos")
+    assert out["a"]["decided_by"] == "rule"                         # categorized members never change
+
+
+def test_session_one_user_tag_categorizes_the_whole_talk():
+    from sekerinshotto.organize import inherit_sessions
+    items, out = _sess([("a", 3, None, "uncategorized", None), ("b", 6, None, "learning", "user"),
+                        ("c", 9, None, "uncategorized", None), ("d", 11, None, "event", "rule")])
+    inherit_sessions(items, out)
+    assert out["a"]["category"] == out["c"]["category"] == "learning" and out["d"]["category"] == "event"
+    assert "set by user on 1 of 4 photos" in out["a"]["why"]
+
+
+def test_session_needs_a_clear_majority_or_agreeing_callers():
+    from sekerinshotto.organize import inherit_sessions
+    too_few, out1 = _sess([("a", 0, None, "security", "rule"), ("b", 2, None, "security", "rule"),
+                           ("c", 4, None, "uncategorized", None)])
+    split, out2 = _sess([("a", 0, None, "security", "rule"), ("b", 2, None, "event", "rule"),
+                         ("c", 4, None, "learning", "rule"), ("d", 6, None, "uncategorized", None)])
+    clash, out3 = _sess([("a", 0, None, "learning", "user"), ("b", 2, None, "code", "llm"),
+                         ("c", 4, None, "uncategorized", None)])
+    for items, out, iid in ((too_few, out1, "c"), (split, out2, "d"), (clash, out3, "c")):
+        inherit_sessions(items, out)
+        assert out[iid]["category"] == "uncategorized" and out[iid]["decided_by"] is None
