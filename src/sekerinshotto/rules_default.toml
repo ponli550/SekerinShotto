@@ -1,25 +1,28 @@
-# SekerinShotto classification rules — first matching rule wins.
+# SekerinShotto rules. Copy this file to <state>/rules.toml to replace it, then run `organize --commit`.
 #
-# Copy this file to <state>/rules.toml to replace it, then run `organize --commit`.
+# Two sections:
+#   [[rule]]   decides a note's KIND, which is its folder (notes/<kind>/). First matching rule wins.
+#              Photos and slides are decided before the app rules: a visual image is `photo`, a camera
+#              photo with text is `slide`; anything no rule claims is `screenshot`.
+#   [[topic]]  adds TOPICS, several per note, as tags topic/<name>. Every matching topic applies.
 #
-# A rule matches when its conditions hold (mode "any": at least one; "all": every one given):
-#   apps      package-name prefixes             ["com.whatsapp", "org.telegram"]
-#   qr_types  QR types present                  ["payment", "wifi"]
-#   domains   registrable domains of any URL    ["docs.google.com", "forms.gle"]  (suffix match)
-#   text      regexes; `text_min` distinct ones must match (default 1)
+# Conditions (mode "any": at least one; "all": every one given):
+#   apps        package-name prefixes             ["com.whatsapp", "org.telegram"]
+#   qr_types    QR types present                  ["payment", "wifi"]
+#   domains     registrable domains of any URL    ["docs.google.com", "forms.gle"]  (suffix match)
+#   text        regexes; `text_min` distinct ones must match (default 1)
 #   code_langs  the language detected in a code screenshot ["python", "go"]; "*" is any
-# and then every regex in `also` must match too (e.g. an event needs a date).
-# Text is matched case-insensitively against the OCR text.
+# and then every regex in `also` must match too. Text is matched case-insensitively against the OCR text.
 
-# Code first: a snippet that mentions "python" or "api" is code, not a learning screenshot.
+# ---------------------------------------------------------------- kinds
 [[rule]]
-category = "code"
+kind = "code"
 mode = "any"
 code_langs = ["*"]
 apps = ["com.termux", "com.github.android", "io.spck", "ru.iiec.pydroid3", "com.aide.ui", "com.foxdebug.acode"]
 
 [[rule]]
-category = "payment"
+kind = "receipt"
 mode = "any"
 qr_types = ["payment"]
 apps = ["my.com.gxbank", "com.maybank2u", "my.com.tngdigital", "com.cimb", "my.com.bankislam",
@@ -28,101 +31,43 @@ text = ['\b(payment|transfer|cash in|top up|reload)\s+(successful|completed|rece
         '\bresit\b', '\bpembayaran berjaya\b', '\bduitnow\b']
 
 [[rule]]
-category = "event"
-mode = "all"
-text = ['\b(register|registration|rsvp|apply now|sign up|join us|webinar|workshop|hackathon|bootcamp|summit|conference|competition|meetup|briefing|orientation|daftar|pendaftaran|pertandingan|program|seminar)\b']
-also = ['(\b\d{1,2}\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b|\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2}\b|\b\d{1,2}/\d{1,2}/\d{2,4}\b|\b(mon|tue|wed|thu|fri|sat|sun)[a-z]*day\b|\b(isnin|selasa|rabu|khamis|jumaat|sabtu|ahad)\b)']
-
-[[rule]]
-category = "form"
-mode = "any"
-domains = ["forms.gle", "docs.google.com", "typeform.com", "jotform.com", "tally.so"]
-
-# Security, after event (a security meetup poster is an event) and before learning and the app rules
-# (a LinkedIn post about ransomware is about security, not "social"). One unambiguous term is enough...
-[[rule]]
-category = "security"
-mode = "any"
-text = ['\b(cyber ?security|infosec|malware|ransomware|infostealer|phishing|threat (hunting|intel(ligence)?)|data loss prevention|incident response|devsecops|osint|exfiltration|privilege escalation|zero[- ]day|cve-\d{4}-\d+|google dork(s|ing)?|dorking|reconnaissance|attack surface)\b']
-
-# ...otherwise two different families of weaker terms, so "password" + "keychain" (one family) is not enough.
-[[rule]]
-category = "security"
-mode = "any"
-text = ['\b(stealer|trojan|botnet|backdoor|rootkit|spyware|dropper|exploit(s|ed|ation)?|vulnerabilit(y|ies))\b',
-        '\b(attacker|adversar(y|ies)|persistence|lateral movement|command and control|c2|launch(daemon|agent)s?)\b',
-        '\b(soc|siem|edr|xdr|dlp|iocs?|mitre|att&ck|pentest(ing)?|red team|blue team|telemetry)\b',
-        '\b(data protection|governance, risk|grc|secure by design|access control|security (blog|research|awareness|operations|controls?|posture))\b',
-        '\b(keychain|credentials?|password (abuse|theft|dump|spray)|brute[- ]force|unauthori[sz]ed access)\b',
-        '\b(hunt(ing|able)?|detection (rule|engineering)|threat actors?|footprint(ing)?|endpoint security|process chain)\b',
-        '\b(classification|crown jewels|least privilege|accountability)\b']
-text_min = 2
-
-[[rule]]
-category = "learning"
-mode = "any"
-text = ['\bcertificate of completion\b', '\b(course|lecture|tutorial|syllabus|semester|module|lesson|curriculum|cheat ?sheet|kursus|kuliah)\b',
-        '\b(assignment|submission|quiz|exam|midterm|tugasan|peperiksaan)\b',
-        '\b(machine learning|data science|deep learning|neural network|algorithm|python|javascript|sql|api)\b',
-        '\b(model|dataset|training|inference|parameters?)\b']
-text_min = 2
-
-[[rule]]
-category = "health"
-mode = "any"
-apps = ["com.hihonor.health", "com.huawei.health", "com.google.android.apps.fitness", "com.samsung.android.health"]
-# a step COUNT: the bare word "steps" is every slide's "next steps"
-text = ['\b(deep sleep|rem sleep|heart rate|blood pressure|calories burned)\b', '\b\d[\d,.]*\s*(steps|langkah)\b']
-
-[[rule]]
-category = "shopping"
-mode = "any"
-apps = ["com.shopee", "com.lazada", "com.zalora", "com.taobao", "com.alibaba"]
-text = ['\b(add to cart|buy now|checkout|order (placed|confirmed)|free shipping|voucher)\b']
-
-[[rule]]
-category = "travel"
-mode = "any"
-apps = ["in.redbus", "com.airasia", "com.grabtaxi", "com.booking", "com.agoda", "hk.easyvan"]
-
-[[rule]]
-category = "game"
+kind = "game"
 mode = "any"
 apps = ["com.nianticlabs", "com.roblox", "com.tencent.ig", "com.supercell", "com.mojang"]
 
 [[rule]]
-category = "chat"
+kind = "chat"
 mode = "any"
 apps = ["com.whatsapp", "org.telegram", "com.microsoft.teams", "com.facebook.orca", "com.discord", "jp.naver.line"]
 
 [[rule]]
-category = "email"
+kind = "email"
 mode = "any"
 apps = ["com.google.android.gm", "com.hihonor.email", "com.microsoft.office.outlook"]
 
 [[rule]]
-category = "social"
+kind = "social"
 mode = "any"
 apps = ["com.instagram", "com.linkedin", "com.ss.android.ugc", "com.zhiliaoapp", "com.facebook.katana", "com.twitter", "com.x"]
 
 [[rule]]
-category = "document"
+kind = "document"
 mode = "any"
 apps = ["com.hihonor.hnoffice", "com.microsoft.office", "com.adobe.reader", "com.google.android.apps.docs", "com.nukleus"]
 
 [[rule]]
-category = "system"
+kind = "system"
 mode = "any"
 apps = ["com.hihonor.android.launcher", "com.hihonor.assistant", "com.hihonor.magictranslate", "com.android.settings",
         "com.google.android.apps.nexuslauncher", "com.sec.android.app.launcher", "com.android.systemui"]
 
 [[rule]]
-category = "web"
+kind = "web"
 mode = "any"
 apps = ["com.android.chrome", "org.mozilla", "com.google.android.googlequicksearchbox", "com.brave", "com.openai.chatgpt"]
 
 # ---------------------------------------------------------------- topics
-# Topics are tags, several per note: EVERY matching [[topic]] applies (rules above: first match wins).
+# Topics are tags, several per note: EVERY matching [[topic]] applies (kind rules above: first match wins).
 # Same conditions as a rule (text, text_min, also, apps, domains, qr_types, code_langs); `name` is the topic.
 # Several tables may share a name: any of them adds it.
 
@@ -186,3 +131,19 @@ text = ['\b(add to cart|buy now|checkout|order (placed|confirmed)|free shipping|
 [[topic]]
 name = "code"
 code_langs = ["*"]
+
+[[topic]]
+name = "health"
+apps = ["com.hihonor.health", "com.huawei.health", "com.google.android.apps.fitness", "com.samsung.android.health"]
+
+[[topic]]
+name = "shopping"
+apps = ["com.shopee", "com.lazada", "com.zalora", "com.taobao", "com.alibaba"]
+
+[[topic]]
+name = "travel"
+apps = ["in.redbus", "com.airasia", "com.grabtaxi", "com.booking", "com.agoda", "hk.easyvan"]
+
+[[topic]]
+name = "form"
+domains = ["forms.gle", "docs.google.com", "typeform.com", "jotform.com", "tally.so"]

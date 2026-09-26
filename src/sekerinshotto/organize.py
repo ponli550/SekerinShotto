@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .extract import hamming
 from .notes import WRITEBACK_BY, read_frontmatter
-from .rules import classify, topics_of
+from .rules import KINDS, UNCATEGORIZED, classify, topics_of
 from .terms import key_terms
 from . import sequences as seqmod
 
@@ -149,37 +149,32 @@ def sessions(items: dict[str, dict]) -> list[list[str]]:
     return [[i for _, i in r] for r in runs if len(r) >= 2]
 
 
-def inherit_sessions(items: dict[str, dict], out: dict[str, dict]) -> None:
-    """Uncategorized members of a session take the category a caller (user, LLM, Laya) set on any member,
-    when those agree; otherwise the majority of categorized members. decided_by `session` is not a
-    write-back: it is recomputed on every organize, so re-tagging the seed moves the whole session."""
-    for members in sessions(items):
-        unc = [i for i in members if out[i]["category"] == "uncategorized" and out[i]["decided_by"] is None]
-        if not unc:
-            continue
-        times = sorted(items[i]["captured_at"][:16].replace("T", " ") for i in members)
-        span = f"{times[0]}–{times[-1][11:]}" if times[0][:10] == times[-1][:10] else f"{times[0]}–{times[-1]}"
-        seeds = [i for i in members if out[i]["decided_by"] in WRITEBACK_BY]
-        cats = Counter(out[i]["category"] for i in seeds)
-        if len(cats) == 1:
-            cat = next(iter(cats))
-            by = Counter(out[i]["decided_by"] for i in seeds).most_common(1)[0][0]
-            why = f"session: set by {by} on {len(seeds)} of {len(members)} photos, {span}"
-        else:
-            labelled = Counter(out[i]["category"] for i in members if out[i]["category"] != "uncategorized")
-            total = sum(labelled.values())
-            if total < SESSION_MIN:
-                continue
-            cat, n = labelled.most_common(1)[0]
-            if n / total < SESSION_SHARE:
-                continue
-            why = f"session: {n} of {total} categorized photos, {span}, are {cat}"
-        for i in unc:
-            out[i].update(category=cat, decided_by="session", why=why)
-
-
 def label_slug(label: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", str(label).lower()).strip("-")[:40]
+
+
+CAMERA_NAME = re.compile(r"^(IMG|PXL|MVIMG)_\d{8}_\d{6}", re.I)     # Android camera; screenshots say Screenshot_
+
+
+def is_camera(rec: dict) -> bool:
+    if rec.get("source_app") == "com.apple.camera":
+        return True
+    return not rec.get("source_app") and bool(CAMERA_NAME.match(Path(rec.get("source_path") or "").name))
+
+
+def decide_kind(rec: dict, app_kind: str, why: str) -> tuple[str, str]:
+    """Kind = what the image is. Code and receipts first (they are what they show), then a visual image is a
+    photo, a camera photo with text is a slide, then the app's kind; anything else is a screenshot."""
+    from .cleanup import is_visual
+    if app_kind in ("code", "receipt"):
+        return app_kind, why
+    if is_visual({**rec, "category": app_kind}):
+        return "photo", f"visual: text covers {rec.get('text_coverage', 0):.0%} of the image"
+    if is_camera(rec):
+        return "slide", "camera photo with text"
+    if app_kind != UNCATEGORIZED:
+        return app_kind, why
+    return "screenshot", "no kind rule matched"
 
 
 def assign_episodes(items: dict[str, dict], out: dict[str, dict], content: Path) -> None:
@@ -221,11 +216,12 @@ def assign_topics(items: dict[str, dict], out: dict[str, dict], topic_rules, fms
             found = topics_of(topic_rules, rec.get("source_app"), {b["type"] for b in rec["entities"]["qr"]},
                               rec["entities"]["domains"], rec.get("_text", ""), rec.get("code"))
         o = out[iid]
-        if o["decided_by"] in (*WRITEBACK_BY, "session") and o["category"] != "uncategorized":
-            found.setdefault(o["category"], f"category set by {o['decided_by']}")
         added[iid] = _names(fm.get("topics_added"))
         for t in added[iid]:
             found[t] = "added by user"
+        if fm.get("_legacy_topic"):                         # a caller's category from before kinds: the user's
+            found[fm["_legacy_topic"]] = f"set by {fm.get('decided_by')} (was its category)"
+            added[iid] = sorted(set(added[iid]) | {fm["_legacy_topic"]})
         for t in _names(fm.get("topics_removed")):
             found.pop(t, None)
         o["topics"], o["topic_why"] = sorted(found), found
@@ -257,19 +253,23 @@ def organize(items: dict[str, dict], rules, content: Path, stopterms: set[str] =
         if note and note.exists():
             fm = fms[iid] = read_frontmatter(note.read_text())
             if fm.get("decided_by") in WRITEBACK_BY:              # a caller decided; never override
-                ev = fm.get("decided_evidence")
-                cat, by = fm.get("category"), fm["decided_by"]
-                why = f"set by {by}" + (f", quoting {ev!r}" if ev else "")
+                k = fm.get("kind") or fm.get("category")
+                if k in KINDS:
+                    ev = fm.get("decided_evidence")
+                    cat, by = k, fm["decided_by"]
+                    why = f"set by {by}" + (f", quoting {ev!r}" if ev else "")
+                elif k and k != UNCATEGORIZED:
+                    fm["_legacy_topic"] = k                        # a caller's category from before kinds
         if cat is None:
             qr_types = {b["type"] for b in rec["entities"]["qr"]}
-            cat, why = classify(rules, rec.get("source_app"), qr_types, rec["entities"]["domains"], rec.get("_text", ""),
-                                 rec.get("code"))
-            by = "rule" if cat != "uncategorized" else None
+            k, why = classify(rules, rec.get("source_app"), qr_types, rec["entities"]["domains"], rec.get("_text", ""),
+                              rec.get("code"))
+            cat, why = decide_kind(rec, k, why)
+            by = "rule"
         sc, sc_why = score(rec)
         out[iid] = {"category": cat, "decided_by": by, "why": why, "group": None, "rank": None,
                     "size": None, "score": sc, "score_why": sc_why}
 
-    inherit_sessions(items, out)
     assign_episodes(items, out, content)
     assign_topics(items, out, topic_rules, fms)
 

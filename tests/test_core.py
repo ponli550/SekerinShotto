@@ -100,11 +100,11 @@ def test_ocr_urls_are_never_links():
 
 def test_rerender_keeps_user_text_foreign_keys_and_llm_category():
     first = render(_ex(), "2026-01-01T00:00:00Z")
-    edited = first.replace('category: "uncategorized"', 'category: "event"\ndecided_by: "llm"')
+    edited = first.replace('kind: "uncategorized"', 'kind: "slide"\ndecided_by: "llm"')
     edited = edited.replace("\n---\n", '\nwrapper_key: "keep me"\n---\n', 1) + "my own thought\n"
     again = render(_ex(lines=[("Changed text", 1.0)]), "2026-01-02T00:00:00Z", edited)
     assert "my own thought" in again and 'wrapper_key: "keep me"' in again
-    assert 'category: "event"' in again and 'decided_by: "llm"' in again
+    assert 'kind: "slide"' in again and 'decided_by: "llm"' in again
     assert "Changed text" in again and "Hello world" not in again
 
 
@@ -308,22 +308,26 @@ def _rules():
     return load_rules(Path("/nonexistent"))[0]
 
 
-@pytest.mark.parametrize("app,qr,domains,text,cat", [
-    ("com.whatsapp.w4b", set(), [], "Hackathon registration closes 22 January 2026", "event"),
-    ("com.whatsapp.w4b", set(), [], "okay faham nanti tanya", "chat"),
-    ("com.instagram.android", {"payment"}, [], "scan to pay", "payment"),
-    ("com.hihonor.android.launcher", set(), [], "TNG eWallet Cash In Successful", "payment"),
-    ("com.google.android.gm", set(), ["forms.gle"], "please fill in", "form"),
-    ("com.google.android.gm", set(), [], "Pendaftaran dibuka sehingga 20 DECEMBER", "event"),
-    ("com.linkedin.android", set(), [], "a post about hiring", "social"),
-    ("com.unknown.app", set(), [], "nothing useful", "uncategorized"),
+@pytest.mark.parametrize("app,qr,domains,text,kind,topic", [
+    ("com.whatsapp.w4b", set(), [], "Hackathon registration closes 22 January 2026", "chat", "event"),
+    ("com.whatsapp.w4b", set(), [], "okay faham nanti tanya", "chat", None),
+    ("com.instagram.android", {"payment"}, [], "scan to pay", "receipt", "finance"),
+    ("com.hihonor.android.launcher", set(), [], "TNG eWallet Cash In Successful", "receipt", "finance"),
+    ("com.google.android.gm", set(), ["forms.gle"], "please fill in", "email", "form"),
+    ("com.google.android.gm", set(), [], "Pendaftaran dibuka sehingga 20 DECEMBER", "email", "event"),
+    ("com.linkedin.android", set(), [], "a post about hiring", "social", None),
+    ("com.unknown.app", set(), [], "nothing useful", "uncategorized", None),
 ])
-def test_default_rules(app, qr, domains, text, cat):
-    assert classify(_rules(), app, qr, domains, text)[0] == cat
+def test_default_rules(app, qr, domains, text, kind, topic):
+    from sekerinshotto.rules import load_topics, topics_of
+    assert classify(_rules(), app, qr, domains, text)[0] == kind              # kind rules: the folder
+    got = topics_of(load_topics(Path("/nonexistent")), app, qr, domains, text)
+    assert (topic in got) if topic else not got, got                         # topics: the subject
 
 
 def test_event_needs_a_date():
-    assert classify(_rules(), "com.unknown", set(), [], "Join our workshop soon")[0] == "uncategorized"
+    from sekerinshotto.rules import load_topics, topics_of
+    assert "event" not in topics_of(load_topics(Path("/nonexistent")), "com.unknown", set(), [], "Join our workshop soon")
 
 
 def test_bad_user_rules_are_errors():
@@ -402,11 +406,11 @@ def test_organize_moves_note_and_keeps_llm_decision(sample, tmp_path):
     assert code == 0 and moved.exists() and not note.exists() and not note.parent.exists()
     assert "keep this line" in moved.read_text()
     moved.write_text(moved.read_text().replace('decided_by: "rule"', 'decided_by: "llm"')
-                     .replace('category: "browsing"', 'category: "reading"'))
+                     .replace('kind: "browsing"', 'kind: "document"'))
     rules.unlink()
     _run("organize", "--commit", env=env)
-    final = content / "notes" / "reading" / note.name              # the llm's category decides the folder
-    assert 'category: "reading"' in final.read_text() and "keep this line" in final.read_text()
+    final = content / "notes" / "document" / note.name             # the llm's kind decides the folder
+    assert 'kind: "document"' in final.read_text() and "keep this line" in final.read_text()
     assert _run("organize", env=env)[1]["data"]["notes_to_write"] == 0
 
 
@@ -557,10 +561,15 @@ def test_search_show_and_grounded_tag(sample):
     code, short = _run("tag", iid, "--category", "event", env=env)
     assert code == 1 and "--quote" in short["error"]
     code, ok = _run("tag", iid, "--category", "signup", "--quote", "REGISTER AT docs.example", "--commit", env=env)
-    assert code == 0 and ok["data"]["note"].startswith("notes/signup/")
+    assert code == 0 and ok["data"]["note"].startswith("notes/web/") and "signup" in ok["data"]["to"]["topics"]
+    code, ok = _run("tag", iid, "--kind", "document", "--quote", "REGISTER AT docs.example", "--commit", env=env)
+    assert code == 0 and ok["data"]["note"].startswith("notes/document/")
     _run("organize", "--commit", env=env)
     shown = _run("show", iid, env=env)[1]["data"]
-    assert shown["category"] == "signup" and shown["decided_by"] == "llm" and "quoting" in shown["why"]
+    assert shown["kind"] == "document" and shown["decided_by"] == "llm" and "quoting" in shown["why"]
+    assert "signup" in shown["topics"]
+    code, bad = _run("tag", iid, "--kind", "poster", "--by", "user", env=env)
+    assert code == 1 and "unknown kind" in bad["error"]
 
 
 # ---------------------------------------------------------------- allowlist (phase 6)
@@ -1101,23 +1110,25 @@ def test_rule_suggestions_are_conservative(tmp_path):
     from sekerinshotto.commands import _index, _rule_suggestions
     st = _State(tmp_path / "st")
     con = st.connect()
-    def put(i, app, domains, cat, by):
+    def put(i, app, domains, topic):
         rec = {"id": f"sha256:{i:064x}", "source_path": f"/x/{i}.png", "source_app": app, "captured_at": None,
                "width": 1, "height": 1, "bytes": 1, "source_state": "present", "status": "ok", "status_reason": None,
                "ocr_confidence": 1.0, "text_chars": 0, "note_path": f"n{i}.md", "batch_id": "b",
-               "entities": {"qr": [], "urls": [], "domains": domains}, "category": cat, "decided_by": by}
+               "entities": {"qr": [], "urls": [], "domains": domains}, "category": "screenshot", "decided_by": "rule",
+               "topics": [topic] if topic else [], "topic_why": {topic: "added by user"} if topic else {}}
         _index(con, rec, "", "2026-01-01T00:00:00Z")
-    put(1, "com.a", ["luma.com"], "event", "llm")
-    put(2, "com.a", ["luma.com"], "event", "llm")
-    put(3, "com.whatsapp", [], "event", "llm")                  # 2 of 10 WhatsApp notes: no app rule
-    put(4, "com.whatsapp", [], "event", "llm")
+    put(1, "com.a", ["luma.com"], "event")
+    put(2, "com.a", ["luma.com"], "event")
+    put(3, "com.whatsapp", [], "event")                        # 2 of 10 WhatsApp notes: no app rule
+    put(4, "com.whatsapp", [], "event")
     for i in range(5, 13):
-        put(i, "com.whatsapp", [], "chat", "rule")
-    put(13, "com.b", ["mixed.my"], "event", "llm")               # callers disagree: no domain rule
-    put(14, "com.b", ["mixed.my"], "shopping", "llm")
+        put(i, "com.whatsapp", [], None)
+    put(13, "com.b", ["mixed.my"], "event")                    # callers disagree: no domain rule
+    put(14, "com.b", ["mixed.my"], "shopping")
     con.commit()
     sug = _rule_suggestions(st, con, 2)
-    assert [(s["kind"], s["value"], s["category"]) for s in sug] == [("domain", "luma.com", "event")]
+    assert [(s["kind"], s["value"], s["topic"]) for s in sug] == [("domain", "luma.com", "event")]
+    assert sug[0]["toml"].startswith("[[topic]]")
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="Apple Vision")
@@ -1332,13 +1343,13 @@ def test_normalize_glyphs_and_call_space():
     assert normalize("if (x ≠ y) return (a)") == "if (x != y) return (a)"
 
 
-def test_code_rule_wins_over_learning():
-    from sekerinshotto.rules import classify, load
+def test_code_is_a_kind_and_its_subject_a_topic():
+    from sekerinshotto.rules import classify, load, load_topics, topics_of
     rules, _ = load(Path("/nonexistent"))
     code = {"lang": "python", "why": ["def get_user(uid: int) -> dict:"]}
-    cat, why = classify(rules, None, set(), [], "python api model training", code)
-    assert cat == "code" and why.startswith("code python")
-    assert classify(rules, None, set(), [], "python api model training")[0] == "learning"
+    kind, why = classify(rules, None, set(), [], "python api model training", code)
+    assert kind == "code" and why.startswith("code python")
+    assert {"code", "learning"} <= set(topics_of(load_topics(Path("/x")), None, set(), [], "python api model training", code))
 
 
 def _menlo():
@@ -1628,9 +1639,12 @@ def test_forget_key_needs_the_word_forget():
     ("Cybersecurity meetup · register now · 25 Sep", "event"),                  # an event poster stays an event
 ])
 def test_security_and_health_rules(text, cat):
-    from sekerinshotto.rules import classify, load
-    rules, _ = load(Path("/nonexistent"))
-    assert classify(rules, None, set(), [], text)[0] == cat, classify(rules, None, set(), [], text)
+    from sekerinshotto.rules import load_topics, topics_of
+    got = topics_of(load_topics(Path("/nonexistent")), None, set(), [], text)
+    if cat == "uncategorized":
+        assert not ({"security", "health"} & set(got)), got
+    else:
+        assert cat in got, got
 
 
 # ---------------------------------------------------------------- sessions
@@ -1642,45 +1656,6 @@ def _sess(spec):
                       "source_app": app}
         out[iid] = {"category": cat, "decided_by": by, "why": None}
     return items, out
-
-
-def test_session_majority_fills_uncategorized_slides():
-    from sekerinshotto.organize import inherit_sessions
-    items, out = _sess([("a", 0, None, "security", "rule"), ("b", 4, None, "security", "rule"),
-                        ("c", 8, None, "security", "rule"), ("d", 12, None, "uncategorized", None),
-                        ("e", 20, None, "uncategorized", None),     # 8 min after d: same session (gap rule)
-                        ("f", 55, None, "uncategorized", None),     # 35 min gap: past a camera break, left alone
-                        ("g", 5, "com.whatsapp", "uncategorized", None),    # other source: not in it
-                        ("h", 0, "com.x", "security", "rule"), ("i", 2, "com.x", "security", "rule"),
-                        ("j", 4, "com.x", "security", "rule"),
-                        ("k", 16, "com.x", "uncategorized", None)])  # app screenshots: 12 min is a new session
-    inherit_sessions(items, out)
-    assert [out[i]["category"] for i in "defgk"] == ["security", "security", "uncategorized", "uncategorized",
-                                                     "uncategorized"]
-    assert out["d"]["decided_by"] == "session" and out["d"]["why"].startswith("session: 3 of 3 categorized photos")
-    assert out["a"]["decided_by"] == "rule"                         # categorized members never change
-
-
-def test_session_one_user_tag_categorizes_the_whole_talk():
-    from sekerinshotto.organize import inherit_sessions
-    items, out = _sess([("a", 3, None, "uncategorized", None), ("b", 6, None, "learning", "user"),
-                        ("c", 9, None, "uncategorized", None), ("d", 11, None, "event", "rule")])
-    inherit_sessions(items, out)
-    assert out["a"]["category"] == out["c"]["category"] == "learning" and out["d"]["category"] == "event"
-    assert "set by user on 1 of 4 photos" in out["a"]["why"]
-
-
-def test_session_needs_a_clear_majority_or_agreeing_callers():
-    from sekerinshotto.organize import inherit_sessions
-    too_few, out1 = _sess([("a", 0, None, "security", "rule"), ("b", 2, None, "security", "rule"),
-                           ("c", 4, None, "uncategorized", None)])
-    split, out2 = _sess([("a", 0, None, "security", "rule"), ("b", 2, None, "event", "rule"),
-                         ("c", 4, None, "learning", "rule"), ("d", 6, None, "uncategorized", None)])
-    clash, out3 = _sess([("a", 0, None, "learning", "user"), ("b", 2, None, "code", "llm"),
-                         ("c", 4, None, "uncategorized", None)])
-    for items, out, iid in ((too_few, out1, "c"), (split, out2, "d"), (clash, out3, "c")):
-        inherit_sessions(items, out)
-        assert out[iid]["category"] == "uncategorized" and out[iid]["decided_by"] is None
 
 
 def test_camera_break_under_30_min_stays_one_session():

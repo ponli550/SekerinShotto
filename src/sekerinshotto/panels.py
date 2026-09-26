@@ -174,7 +174,7 @@ def render(view: str, con, content: Path | None, state_root: Path, category: str
     if view == "home":
         out = _home(con, content, state_root, now)
     elif view == "class":
-        out += ["categories · rule vs caller decisions", ""]
+        out += ["kinds · the folder each note is in · rule vs caller decisions", ""]
         for cat, n, rules, callers in _q(con, """SELECT category, COUNT(*), SUM(decided_by='rule'),
                 SUM(decided_by IN ('llm','user','laya')) FROM items GROUP BY 1 ORDER BY 2 DESC, 1"""):
             out.append(f"  {cat:<14} {n:>5}   rule {rules or 0:>4}   caller {callers or 0:>3}")
@@ -397,6 +397,7 @@ CATEGORY_COLOURS = {
     "event": "orange", "payment": "green", "chat": "cyan", "social": "pink", "web": "blue", "learning": "purple",
     "health": "red", "shopping": "yellow", "form": "teal", "document": "lime", "email": "gold", "game": "coral",
     "travel": "sky", "security": "red", "code": "violet",
+    "receipt": "green", "slide": "orange", "photo": "lime", "screenshot": "sky",
 }
 
 

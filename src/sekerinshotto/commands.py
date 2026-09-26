@@ -22,6 +22,7 @@ from .notes import (NoteConflict, extraction_from_record, manifest_record, note_
                     render_episode, render_sequence,
                     text_from_note, user_part_is_empty)
 from .organize import changed, load_items, organize
+from .rules import KINDS
 from .rules import load as load_rules
 from .domains import DomainIndex, update as domains_update
 from .state import State, now_iso, verify_journal
@@ -266,6 +267,7 @@ def cmd_status(a, state: State):
         "qr_by_type": q("SELECT subtype, COUNT(*) FROM entities WHERE kind='qr' GROUP BY subtype"),
         "top_apps": q("SELECT source_app, COUNT(*) c FROM items GROUP BY source_app ORDER BY c DESC LIMIT 10"),
         "journal": {"files": len(journals), "intact": not broken, "broken": broken},
+        "by_kind": q("SELECT category, COUNT(*) FROM items GROUP BY category"),
         "by_category": q("SELECT category, COUNT(*) FROM items GROUP BY category"),
         "by_topic": q("SELECT value, COUNT(*) FROM items, json_each(items.record, '$.topics') GROUP BY value"),
         "without_topic": con.execute("SELECT COUNT(*) FROM items WHERE json_array_length(record, '$.topics') "
@@ -370,6 +372,11 @@ def apply_organization(state: State, con, content: Path, journal, manifest: Path
             new_rel = f"notes/{o['category']}/{name}" if name else note_relpath(ex, o["category"])
             old_path, new_path = (content / old_rel) if old_rel else None, content / new_rel
             existing = old_path.read_text() if old_path and old_path.exists() else None
+            legacy = [t for t, w in (o.get("topic_why") or {}).items() if w.endswith("(was its category)")]
+            if existing is not None and legacy:
+                from .notes import read_frontmatter as _rf, set_frontmatter as _sf
+                had = _rf(existing).get("topics_added") or []
+                existing = _sf(existing, {"topics_added": sorted(set(had) | set(legacy))})
             try:
                 body = render(ex, ingested, existing, o)
             except NoteConflict:
@@ -848,7 +855,8 @@ from .redact import redact, redact_qr  # noqa: E402
 from .rules import _CATEGORY  # noqa: E402
 
 _FILTER_ARGS = [
-    Arg("--category", "only this category"), Arg("--topic", "only notes with this topic"), Arg("--domain", "only notes with a URL on this domain (suffix)"),
+    Arg("--kind", "only this kind"), Arg("--category", "old name for --kind"),
+    Arg("--topic", "only notes with this topic"), Arg("--domain", "only notes with a URL on this domain (suffix)"),
     Arg("--app", "only screenshots from this app (package prefix)"),
     Arg("--since", "captured on or after this date (YYYY-MM-DD)"), Arg("--until", "captured on or before (YYYY-MM-DD)"),
     Arg("--group", "only members of this duplicate group"),
@@ -859,12 +867,12 @@ _FILTER_ARGS = [
 
 def _filters(a) -> tuple[str, list]:
     where, params = ["i.record IS NOT NULL"], []
-    if getattr(a, "category", None):
-        where.append("i.category = ?"); params.append(a.category)
+    if getattr(a, "kind", None) or getattr(a, "category", None):
+        where.append("i.category = ?"); params.append(a.kind or a.category)
     if getattr(a, "topic", None):
         where.append("EXISTS (SELECT 1 FROM json_each(i.record, '$.topics') WHERE value = ?)"); params.append(a.topic)
     if getattr(a, "uncategorized", False):
-        where.append("i.category = 'uncategorized'")
+        where.append("(json_array_length(i.record, '$.topics') IS NULL OR json_array_length(i.record, '$.topics') = 0)")
     if getattr(a, "app", None):
         where.append("i.source_app LIKE ?"); params.append(a.app + "%")
     if getattr(a, "since", None):
@@ -942,7 +950,7 @@ def cmd_search(a, state: State):
 
 
 @command("list", "List notes by category or state, newest first; excerpts are redacted",
-         args=[Arg("--uncategorized", "only notes no rule matched (for the calling LLM to tag)", flag=True)]
+         args=[Arg("--uncategorized", "only notes with no topic yet (the calling LLM's tagging queue)", flag=True)]
               + _FILTER_ARGS)
 def cmd_list(a, state: State):
     con = state.connect()
@@ -1004,7 +1012,8 @@ def cmd_show(a, state: State):
     return Result({"id": iid, "note": r["note_path"], "text": text, "redactions": n,
                    "urls": urls, "qr": [redact_qr(q) for q in rec["entities"]["qr"]],
                    "domains": rec["entities"]["domains"],
-                   "category": r["category"], "decided_by": r["decided_by"], "why": r["why"],
+                   "kind": r["category"], "category": r["category"], "topics": json.loads(r["record"]).get("topics") or [],
+                   "decided_by": r["decided_by"], "why": r["why"],
                    "group": r["group_id"], "rank": r["rank"], "group_size": r["group_size"],
                    "app": r["source_app"], "captured_at": r["captured_at"], "status": r["status"],
                    "source_state": r["source_state"], "purge_after": r["purge_after"],
@@ -1017,7 +1026,8 @@ def _norm(s: str) -> str:
 
 @command("tag", "Set a note's category, or add/remove topics, as the calling LLM (or user), grounded by a quote",
          args=[Arg("id", "item id, id prefix (>= 8 hex) or note filename"),
-               Arg("--category", "new category: lowercase letters, digits, hyphens"),
+               Arg("--kind", "override the kind (the folder): " + ", ".join(KINDS)),
+               Arg("--category", "old name: a kind sets --kind, anything else adds it as a --topic"),
                Arg("--topic", "add topics (comma-separated); a note has several, tagged topic/<name>"),
                Arg("--remove-topic", "remove topics (comma-separated), even ones a rule found"),
                Arg("--quote", "text copied from the screenshot that justifies the category (required for llm)"),
@@ -1033,8 +1043,17 @@ def cmd_tag(a, state: State):
         raise ToolError("--by must be 'llm' or 'user'")
     add = [t.strip().lower() for t in (a.topic or "").split(",") if t.strip()]
     drop = [t.strip().lower() for t in (a.remove_topic or "").split(",") if t.strip()]
+    kind = a.kind
+    if a.category:
+        if a.category in KINDS:
+            kind = kind or a.category
+        else:
+            add.append(a.category)
+    if kind and kind not in KINDS:
+        raise ToolError(f"unknown kind {kind!r}; kinds: {', '.join(KINDS)} (a subject is a --topic)")
+    a.category = kind
     if not (a.category or add or drop):
-        raise ToolError("give --category, --topic or --remove-topic")
+        raise ToolError("give --kind, --topic or --remove-topic")
     for t in ([a.category] if a.category else []) + add + drop:
         if not _CATEGORY.match(t):
             raise ToolError(f"invalid name {t!r}: lowercase letters, digits, hyphens, max 31 chars")
@@ -1069,7 +1088,7 @@ def cmd_tag(a, state: State):
         have_drop = [t for t in (fm.get("topics_removed") or []) if t not in add]
         updates = {}
         if a.category:
-            updates.update({"category": a.category, "decided_by": a.by})
+            updates.update({"kind": a.category, "decided_by": a.by})
             if quote:
                 updates["decided_evidence"] = quote
         if add or drop:
@@ -1947,46 +1966,44 @@ def cmd_terms_unhide(a, state: State):
 
 # ---------------------------------------------------------------- rule suggestions
 def _rule_suggestions(state: State, con, min_tags: int) -> list[dict]:
+    """[[topic]] tables from topics callers added: a domain whose tagged notes all carry one topic, or an app
+    whose >= 5 tags agree AND cover >= 60% of its notes (a topic rule on an app tags every note from it)."""
     from collections import Counter, defaultdict
-    from .rules import classify, load as load_rules
-    rules, _ = load_rules(state.root)
-    rows = [(json.loads(r["record"]), r["category"], r["decided_by"]) for r in con.execute(
-        "SELECT record, category, decided_by FROM items WHERE record IS NOT NULL")]
-    tagged = [(rec, cat) for rec, cat, by in rows if by in ("llm", "user", "laya")]
+    from .rules import load_topics, topics_of
+    topics = load_topics(state.root)
+    rows = [json.loads(r["record"]) for r in con.execute("SELECT record FROM items WHERE record IS NOT NULL")]
     by_domain, by_app = defaultdict(Counter), defaultdict(Counter)
-    for rec, cat in tagged:
-        for d in rec["entities"]["domains"]:
-            by_domain[d][cat] += 1
-        if rec.get("source_app"):
-            by_app[rec["source_app"]][cat] += 1
-    app_total = Counter(rec.get("source_app") for rec, _, _ in rows)
+    for rec in rows:
+        for t, why in (rec.get("topic_why") or {}).items():
+            if why == "added by user" or why.startswith("set by"):
+                for d in rec["entities"]["domains"]:
+                    by_domain[d][t] += 1
+                if rec.get("source_app"):
+                    by_app[rec["source_app"]][t] += 1
+    app_total = Counter(rec.get("source_app") for rec in rows)
     out = []
-    for dom, cats in sorted(by_domain.items()):
-        (cat, n), = cats.most_common(1)
-        if n < min_tags or len(cats) > 1:
-            continue                                     # too few tags, or callers disagree
-        if classify(rules, None, set(), [dom], "")[0] == cat:
-            continue                                     # the rules already say so
-        out.append({"kind": "domain", "value": dom, "category": cat, "tags": n,
-                    "reason": f"{n} notes on {dom} tagged {cat}, none tagged otherwise"})
-    for app, cats in sorted(by_app.items()):
-        (cat, n), = cats.most_common(1)
-        share = n / max(app_total[app], 1)
-        if n < max(min_tags, 5) or len(cats) > 1 or share < 0.6:
-            continue                                     # an app rule captures every note from that app:
-                                                         # >= 5 consistent tags AND >= 60% of the app's notes
-        if classify(rules, app, set(), [], "")[0] == cat:
+    for dom, ts in sorted(by_domain.items()):
+        (t, n), = ts.most_common(1)
+        if n < min_tags or len(ts) > 1 or t in topics_of(topics, None, set(), [dom], ""):
             continue
-        out.append({"kind": "app", "value": app, "category": cat, "tags": n,
-                    "reason": f"{n} of {app_total[app]} notes from {app} tagged {cat} ({share:.0%})"})
+        out.append({"kind": "domain", "value": dom, "topic": t, "tags": n,
+                    "reason": f"{n} notes on {dom} given topic {t}, none another"})
+    for app, ts in sorted(by_app.items()):
+        (t, n), = ts.most_common(1)
+        share = n / max(app_total[app], 1)
+        if n < max(min_tags, 5) or len(ts) > 1 or share < 0.6 or t in topics_of(topics, app, set(), [], ""):
+            continue
+        out.append({"kind": "app", "value": app, "topic": t, "tags": n,
+                    "reason": f"{n} of {app_total[app]} notes from {app} given topic {t} ({share:.0%})"})
     for i, sug in enumerate(out, 1):
         key = "domains" if sug["kind"] == "domain" else "apps"
         sug["n"] = i
-        sug["toml"] = f'[[rule]]\ncategory = "{sug["category"]}"\nmode = "any"\n{key} = ["{sug["value"]}"]\n'
+        sug["category"] = sug["topic"]                        # old field name, kept for callers
+        sug["toml"] = f'[[topic]]\nname = "{sug["topic"]}"\n{key} = ["{sug["value"]}"]\n'
     return out
 
 
-@command("rules suggest", "Suggest rules from categories the LLM or user set, so similar notes sort themselves",
+@command("rules suggest", "Suggest topic rules from topics the LLM or user added, so similar notes tag themselves",
          args=[Arg("--min", "minimum consistent tags", type=int, default=2),
                Arg("--apply", "comma-separated suggestion numbers to add to <state>/rules.toml")],
          writes=True,
@@ -2000,7 +2017,7 @@ def cmd_rules_suggest(a, state: State):
     sug = _rule_suggestions(state, con, a.min)
     if not a.apply:
         human = "no suggestions yet: tag notes with `tag` (the LLM) first\n" if not sug else "".join(
-            f"{s['n']}. {s['kind']} {s['value']} → {s['category']}  ({s['reason']})\n" for s in sug)
+            f"{s['n']}. {s['kind']} {s['value']} → topic {s['topic']}  ({s['reason']})\n" for s in sug)
         return Result({"committed": False, "suggestions": sug}, human=human)
     try:
         pick = {int(x) for x in a.apply.split(",") if x.strip()}
@@ -2014,8 +2031,8 @@ def cmd_rules_suggest(a, state: State):
     added = "# added by `rules suggest` " + now_iso() + "\n" + "\n".join(s["toml"] for s in chosen) + "\n"
     if not a.commit:
         return Result({"committed": False, "would_add": added, "file": str(f)}, human=added)
-    head, sep, rest = base.partition("[[rule]]")
-    f.write_text(head + added + sep + rest)
+    head, sep, rest = base.partition("[[topic]]")
+    f.write_text(head + added + sep + rest if sep else base.rstrip() + "\n\n" + added)
     from .rules import load as load_rules
     load_rules(state.root)                                   # refuses a broken file (ToolError)
     content = _content_root(state, None, required=True)
@@ -2025,7 +2042,7 @@ def cmd_rules_suggest(a, state: State):
                                  state.dir("batches") / f"{batch_id}.jsonl", batch_id, now_iso())
         con.commit()
     return Result({"committed": True, "added": [s["toml"] for s in chosen], "file": str(f),
-                   "notes_rewritten": rep["notes_written"], "by_category": rep["by_category"]})
+                   "notes_rewritten": rep["notes_written"], "by_kind": rep["by_category"]})
 
 
 # ---------------------------------------------------------------- job control (panel ss-jobs)

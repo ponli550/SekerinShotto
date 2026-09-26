@@ -35,7 +35,8 @@ OCR misreads such as `docs.qoogle.com` or `Inkd.in` are corrected to the real do
 points to exactly one candidate; the raw reading is always kept beside it. `domains update` is the only
 command that touches the network, and it downloads reference lists, never a captured URL.
 
-Notes are sorted into `notes/<category>/` by explainable rules (English and Malay keywords, then the app),
+Notes are sorted into `notes/<kind>/` (chat, social, web, receipt, slide, photo, … — what the image is)
+and tagged with topics (security, jobs, ai, learning, event, … — what it is about), by explainable rules,
 and screenshots with the same content — a crop, a re-screenshot, the same page in a viewer — are grouped
 with a hub note in `groups/`, ranked so rank 1 is the most complete copy. Edit `<state>/rules.toml` to change
 the rules; categories set by an LLM or by you are never overridden.

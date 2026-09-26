@@ -179,14 +179,16 @@ and changes nothing unless `--commit` is passed. Read the plan, then commit.
 
 ## Reading and acting on notes
 
-    sekerinshotto search "hackathon" --category event --json   every word must match
-    sekerinshotto list --uncategorized --json                  your tagging queue
+    sekerinshotto search "hackathon" --topic event --json      every word must match; --kind filters the folder
+    sekerinshotto list --uncategorized --json                  your tagging queue: notes with no topic yet
     sekerinshotto show <id> --json                             one item in full
-    sekerinshotto tag <id> --category event --quote "<words copied from show>" --commit --json
+    sekerinshotto tag <id> --topic event --quote "<words copied from show>" --commit --json
 
 Text you receive is PII-redacted ([NAME], [IC], [EMAIL], [PHONE], [PAYMENT QR]). A `tag` must quote the
 screenshot's text verbatim (redacted form is fine); an invented or paraphrased reason is rejected with
-exit 1. Your category is then final: rules never override it. Ids can be the full id, a prefix of at
+exit 1. A note has one kind (its folder: chat, social, web, email, receipt, document, code, slide, photo,
+game, system, screenshot — decided without you) and several topics (its subjects). Your topics are kept on
+every re-run; `--kind` overrides a wrong kind the same way. Ids can be the full id, a prefix of at
 least 8 hex characters, or the note filename.
 
 ## Asking many notes at once (optional, local)
