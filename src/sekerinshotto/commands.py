@@ -267,6 +267,9 @@ def cmd_status(a, state: State):
         "top_apps": q("SELECT source_app, COUNT(*) c FROM items GROUP BY source_app ORDER BY c DESC LIMIT 10"),
         "journal": {"files": len(journals), "intact": not broken, "broken": broken},
         "by_category": q("SELECT category, COUNT(*) FROM items GROUP BY category"),
+        "by_topic": q("SELECT value, COUNT(*) FROM items, json_each(items.record, '$.topics') GROUP BY value"),
+        "without_topic": con.execute("SELECT COUNT(*) FROM items WHERE json_array_length(record, '$.topics') "
+                                     "IS NULL OR json_array_length(record, '$.topics') = 0").fetchone()[0],
         "groups": con.execute("SELECT COUNT(DISTINCT group_id) FROM items WHERE group_id IS NOT NULL").fetchone()[0],
         "urls_corrected_or_flagged": q("SELECT subtype, COUNT(*) FROM entities WHERE kind='url' AND subtype IS NOT NULL GROUP BY subtype"),
         "domain_list": DomainIndex(state.dir("domains")).info or None,
@@ -332,7 +335,8 @@ def apply_organization(state: State, con, content: Path, journal, manifest: Path
     rules, rules_src = load_rules(state.root)
     items = load_items(con)
     from .terms import load_stopterms
-    org = organize(items, rules, content, load_stopterms(state.root))
+    from .rules import load_topics
+    org = organize(items, rules, content, load_stopterms(state.root), load_topics(state.root))
     targets = sorted(i for i in items if i in force or changed(items[i], org[i]) or not items[i]["_note_path"])
     moves = []
     for i in targets:
@@ -844,7 +848,7 @@ from .redact import redact, redact_qr  # noqa: E402
 from .rules import _CATEGORY  # noqa: E402
 
 _FILTER_ARGS = [
-    Arg("--category", "only this category"), Arg("--domain", "only notes with a URL on this domain (suffix)"),
+    Arg("--category", "only this category"), Arg("--topic", "only notes with this topic"), Arg("--domain", "only notes with a URL on this domain (suffix)"),
     Arg("--app", "only screenshots from this app (package prefix)"),
     Arg("--since", "captured on or after this date (YYYY-MM-DD)"), Arg("--until", "captured on or before (YYYY-MM-DD)"),
     Arg("--group", "only members of this duplicate group"),
@@ -857,6 +861,8 @@ def _filters(a) -> tuple[str, list]:
     where, params = ["i.record IS NOT NULL"], []
     if getattr(a, "category", None):
         where.append("i.category = ?"); params.append(a.category)
+    if getattr(a, "topic", None):
+        where.append("EXISTS (SELECT 1 FROM json_each(i.record, '$.topics') WHERE value = ?)"); params.append(a.topic)
     if getattr(a, "uncategorized", False):
         where.append("i.category = 'uncategorized'")
     if getattr(a, "app", None):
@@ -1009,21 +1015,29 @@ def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip().lower()
 
 
-@command("tag", "Set a note's category as the calling LLM (or user), grounded by a verbatim quote",
+@command("tag", "Set a note's category, or add/remove topics, as the calling LLM (or user), grounded by a quote",
          args=[Arg("id", "item id, id prefix (>= 8 hex) or note filename"),
-               Arg("--category", "new category: lowercase letters, digits, hyphens", required=True),
+               Arg("--category", "new category: lowercase letters, digits, hyphens"),
+               Arg("--topic", "add topics (comma-separated); a note has several, tagged topic/<name>"),
+               Arg("--remove-topic", "remove topics (comma-separated), even ones a rule found"),
                Arg("--quote", "text copied from the screenshot that justifies the category (required for llm)"),
                Arg("--by", "llm or user", default="llm")],
          writes=True,
          details="An LLM write-back is accepted only if --quote (at least 8 characters) appears verbatim in "
                  "the OCR text, as returned by show/search (redacted form accepted), ignoring case and "
                  "whitespace. Otherwise it is rejected with exit 1: invented reasons never reach the vault. "
-                 "The note moves to notes/<category>/ and rules never override it afterwards.")
+                 "The note moves to notes/<category>/ and rules never override it afterwards. Topics are kept in "
+                 "the note's frontmatter (topics_added / topics_removed), so they survive every re-run.")
 def cmd_tag(a, state: State):
     if a.by not in ("llm", "user"):
         raise ToolError("--by must be 'llm' or 'user'")
-    if not _CATEGORY.match(a.category or ""):
-        raise ToolError(f"invalid category {a.category!r}: lowercase letters, digits, hyphens, max 31 chars")
+    add = [t.strip().lower() for t in (a.topic or "").split(",") if t.strip()]
+    drop = [t.strip().lower() for t in (a.remove_topic or "").split(",") if t.strip()]
+    if not (a.category or add or drop):
+        raise ToolError("give --category, --topic or --remove-topic")
+    for t in ([a.category] if a.category else []) + add + drop:
+        if not _CATEGORY.match(t):
+            raise ToolError(f"invalid name {t!r}: lowercase letters, digits, hyphens, max 31 chars")
     content = _content_root(state, None, required=True)
     con = state.connect()
     iid = resolve_id(con, a.id)
@@ -1035,10 +1049,12 @@ def cmd_tag(a, state: State):
         if _norm(quote) not in _norm(raw) and _norm(quote) not in _norm(redact(raw)[0]):
             raise ToolError(f"--quote {quote[:60]!r} does not appear in this screenshot's text; "
                             "copy it verbatim from `show`")
-    row = con.execute("SELECT note_path, category, decided_by FROM items WHERE id=?", (iid,)).fetchone()
-    plan = {"id": iid, "from": {"category": row["category"], "decided_by": row["decided_by"]},
-            "to": {"category": a.category, "decided_by": a.by}, "quote_verified": bool(quote),
-            "note": row["note_path"]}
+    row = con.execute("SELECT note_path, category, decided_by, record FROM items WHERE id=?", (iid,)).fetchone()
+    topics_now = json.loads(row["record"]).get("topics") or []
+    plan = {"id": iid, "from": {"category": row["category"], "decided_by": row["decided_by"], "topics": topics_now},
+            "to": {"category": a.category or row["category"], "decided_by": a.by if a.category else row["decided_by"],
+                   "topics": sorted((set(topics_now) | set(add)) - set(drop))},
+            "quote_verified": bool(quote), "note": row["note_path"]}
     if not a.commit:
         return Result({"committed": False, **plan})
     note = content / row["note_path"]
@@ -1047,12 +1063,21 @@ def cmd_tag(a, state: State):
     batch_id = now_iso().replace(":", "-") + "-tag"
     with state.lock():
         journal = state.journal(batch_id)
-        updates = {"category": a.category, "decided_by": a.by}
-        if quote:
-            updates["decided_evidence"] = quote
+        from .notes import read_frontmatter as _rf
+        fm = _rf(note.read_text())
+        have_add = [t for t in (fm.get("topics_added") or []) if t not in drop]
+        have_drop = [t for t in (fm.get("topics_removed") or []) if t not in add]
+        updates = {}
+        if a.category:
+            updates.update({"category": a.category, "decided_by": a.by})
+            if quote:
+                updates["decided_evidence"] = quote
+        if add or drop:
+            updates["topics_added"] = sorted(set(have_add) | set(add))
+            updates["topics_removed"] = sorted(set(have_drop) | set(drop))
         note.write_text(set_frontmatter(note.read_text(), updates))
-        journal.append(op="tag", id=iid, path=str(note), category=a.category, by=a.by, quote=quote,
-                       batch_id=batch_id)
+        journal.append(op="tag", id=iid, path=str(note), category=a.category, topics_added=add or None,
+                       topics_removed=drop or None, by=a.by, quote=quote, batch_id=batch_id)
         rer = _rerender(state, con, content, journal, batch_id, {iid})
         con.commit()
     new = con.execute("SELECT note_path, category FROM items WHERE id=?", (iid,)).fetchone()

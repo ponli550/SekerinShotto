@@ -120,3 +120,69 @@ apps = ["com.hihonor.android.launcher", "com.hihonor.assistant", "com.hihonor.ma
 category = "web"
 mode = "any"
 apps = ["com.android.chrome", "org.mozilla", "com.google.android.googlequicksearchbox", "com.brave", "com.openai.chatgpt"]
+
+# ---------------------------------------------------------------- topics
+# Topics are tags, several per note: EVERY matching [[topic]] applies (rules above: first match wins).
+# Same conditions as a rule (text, text_min, also, apps, domains, qr_types, code_langs); `name` is the topic.
+# Several tables may share a name: any of them adds it.
+
+[[topic]]
+name = "security"
+text = ['\b(cyber ?security|infosec|malware|ransomware|infostealer|phishing|threat (hunting|intel(ligence)?)|data loss prevention|incident response|devsecops|osint|exfiltration|privilege escalation|zero[- ]day|cve-\d{4}-\d+|google dork(s|ing)?|dorking|reconnaissance|attack surface)\b']
+
+[[topic]]
+name = "security"
+text = ['\b(stealer|trojan|botnet|backdoor|rootkit|spyware|dropper|exploit(s|ed|ation)?|vulnerabilit(y|ies))\b',
+        '\b(attacker|adversar(y|ies)|persistence|lateral movement|command and control|c2|launch(daemon|agent)s?)\b',
+        '\b(soc|siem|edr|xdr|dlp|iocs?|mitre|att&ck|pentest(ing)?|red team|blue team|telemetry)\b',
+        '\b(data protection|governance, risk|grc|secure by design|access control|security (blog|research|awareness|operations|controls?|posture))\b',
+        '\b(keychain|credentials?|password (abuse|theft|dump|spray)|brute[- ]force|unauthori[sz]ed access)\b',
+        '\b(hunt(ing|able)?|detection (rule|engineering)|threat actors?|footprint(ing)?|endpoint security|process chain)\b',
+        '\b(classification|crown jewels|least privilege|accountability)\b']
+text_min = 2
+
+[[topic]]
+name = "jobs"
+text = ['\b(we.?re hiring|hiring|job (opportunity|vacancy|opening|description)|role vacancy|vacancy|kerja kosong|jawatan kosong|career opportunit(y|ies)|open (role|position)s?)\b',
+        '\b(requirements?|responsibilities|qualifications?|years? of experience|apply (now|here|via)|send (your )?(cv|resume)|job type|full[- ]time|hybrid|remote)\b']
+text_min = 2
+
+[[topic]]
+name = "ai"
+text = ['\b(llms?|large language models?|genai|generative ai|gpt-?\d|chatgpt|claude|gemini|openai|anthropic|hugging ?face|rag|retrieval[- ]augmented|embeddings?|fine[- ]tun(e|ing)|agentic|ai agents?|mcp|prompt(s| engineering)?|transformers?|diffusion)\b',
+        '\b(model|inference|dataset|training|tokens?|context window|benchmark|open[- ]source|weights|github)\b']
+text_min = 2
+
+[[topic]]
+name = "learning"
+text = ['\bcertificate of completion\b', '\b(course|lecture|tutorial|syllabus|semester|module|lesson|curriculum|cheat ?sheet|kursus|kuliah|workshop|training|bootcamp)\b',
+        '\b(assignment|submission|quiz|exam|midterm|tugasan|peperiksaan)\b',
+        '\b(machine learning|data science|deep learning|neural network|algorithm|python|javascript|sql|api)\b',
+        '\b(model|dataset|training|inference|parameters?)\b']
+text_min = 2
+
+[[topic]]
+name = "event"
+mode = "all"
+text = ['\b(register|registration|rsvp|apply now|sign up|join us|webinar|workshop|hackathon|bootcamp|summit|conference|competition|meetup|briefing|orientation|daftar|pendaftaran|pertandingan|program|seminar)\b']
+also = ['(\b\d{1,2}\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b|\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2}\b|\b\d{1,2}/\d{1,2}/\d{2,4}\b|\b(mon|tue|wed|thu|fri|sat|sun)[a-z]*day\b|\b(isnin|selasa|rabu|khamis|jumaat|sabtu|ahad)\b)']
+
+[[topic]]
+name = "finance"
+mode = "any"
+qr_types = ["payment"]
+text = ['\b(payment|transfer|cash in|top up|reload)\s+(successful|completed|received)\b', '\b(transaction|reference)\s+(id|no)\b',
+        '\bresit\b', '\bpembayaran berjaya\b', '\bduitnow\b', '\b(invoice|tax invoice|bank statement|account balance)\b']
+# a price alone ("RM 9.85") is not finance: it is on every shop page and event poster
+
+[[topic]]
+name = "health"
+text = ['\b(deep sleep|rem sleep|heart rate|blood pressure|calories burned)\b', '\b\d[\d,.]*\s*(steps|langkah)\b']
+
+[[topic]]
+name = "shopping"
+text = ['\b(add to cart|buy now|checkout|order (placed|confirmed)|free shipping|voucher)\b']
+
+[[topic]]
+name = "code"
+code_langs = ["*"]

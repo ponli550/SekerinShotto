@@ -15,7 +15,7 @@ USER_TAIL = "\n\n## Notes\n\n"
 OWNED_KEYS = ["id", "ingester", "ingester_version", "source_type", "source_app", "captured_at",
               "ingested", "status", "status_reason", "category", "decided_by", "urls", "urls_unverified", "urls_corrected", "domains",
               "qr", "group", "rank", "group_size", "members", "source_state", "purge_after", "decided_evidence", "terms", "sequence", "seq_part", "seq_size",
-              "code_language", "code_imports", "camera_model", "episode", "episode_label", "span", "source", "tags"]
+              "code_language", "code_imports", "camera_model", "episode", "episode_label", "span", "source", "topics", "tags"]
 WRITEBACK_KEYS = ("category", "decided_by", "decided_evidence")   # kept when a caller decided them
 WRITEBACK_BY = ("llm", "user", "laya")
 _SKIP_PKG = {"com", "org", "net", "my", "io", "co", "app", "android", "apple"}
@@ -145,6 +145,9 @@ def generated_body(ex: Extraction, org: dict | None = None) -> str:
         out.append(f"[[{org['episode']}]]{name} · photo {org['ep_part']} of {org['ep_size']} taken together")
     out.append("## Source")
     src = [f"- category: **{org['category']}** — {org.get('why') or ''}"] if org else []
+    if org and org.get("topics"):
+        tw = org.get("topic_why") or {}
+        src.append("- topics: " + "; ".join(f"**{t}** — {tw.get(t, '')}" for t in org["topics"]))
     src.append(f"- file: `{ex.path.name}`")
     if ex.source_app:
         src.append(f"- app: `{ex.source_app}`")
@@ -184,6 +187,7 @@ def render(ex: Extraction, ingested: str, existing: str | None = None, org: dict
         "terms": org.get("terms") or [],
         "sequence": org.get("sequence"), "seq_part": org.get("seq_part"), "seq_size": org.get("seq_size"),
         "episode": org.get("episode"), "episode_label": org.get("ep_label"),
+        "topics": org.get("topics") or [],
         "urls": [u["url"] for u in ex.urls if _linkable(u)],
         # no scheme, so Obsidian's Properties panel does not turn a misread into a link
         "urls_unverified": [u["url"].split("://", 1)[1] for u in ex.urls if not _linkable(u)],
@@ -197,7 +201,8 @@ def render(ex: Extraction, ingested: str, existing: str | None = None, org: dict
                 + ([f"sekerinshotto/{ex.source_state}"] if ex.source_state in ("held", "attached") else [])
                 + ([f"code/{ex.code['lang']}"] if ex.code else [])
                 + (["sekerinshotto/unverified-url"] if any(not _linkable(u) for u in ex.urls) else [])
-                + ([f"episode/{_label_tag(org.get('ep_label'))}"] if org.get("ep_label") and _label_tag(org.get("ep_label")) else []),
+                + ([f"episode/{_label_tag(org.get('ep_label'))}"] if org.get("ep_label") and _label_tag(org.get("ep_label")) else [])
+                + [f"topic/{t}" for t in org.get("topics") or []],
     }
     foreign: list[str] = []
     user_part = USER_TAIL
@@ -236,6 +241,7 @@ def manifest_record(ex: Extraction, batch_id: str, note_path: str, source_state:
         "sequence": org.get("sequence"), "seq_part": org.get("seq_part"), "seq_size": org.get("seq_size"),
         "episode": org.get("episode"), "ep_part": org.get("ep_part"), "ep_size": org.get("ep_size"),
         "ep_label": org.get("ep_label"),
+        "topics": org.get("topics") or [], "topic_why": org.get("topic_why") or {},
         "status": ex.status, "status_reason": ex.status_reason,
         "entities": {"qr": ex.barcodes, "urls": ex.urls, "domains": ex.domains},
         "code": ex.code, "camera_model": ex.camera_model,
