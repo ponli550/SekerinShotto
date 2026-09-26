@@ -1649,10 +1649,14 @@ def test_session_majority_fills_uncategorized_slides():
     items, out = _sess([("a", 0, None, "security", "rule"), ("b", 4, None, "security", "rule"),
                         ("c", 8, None, "security", "rule"), ("d", 12, None, "uncategorized", None),
                         ("e", 20, None, "uncategorized", None),     # 8 min after d: same session (gap rule)
-                        ("f", 45, None, "uncategorized", None),     # 25 min gap: a new session, left alone
-                        ("g", 5, "com.whatsapp", "uncategorized", None)])   # other source: not in it
+                        ("f", 55, None, "uncategorized", None),     # 35 min gap: past a camera break, left alone
+                        ("g", 5, "com.whatsapp", "uncategorized", None),    # other source: not in it
+                        ("h", 0, "com.x", "security", "rule"), ("i", 2, "com.x", "security", "rule"),
+                        ("j", 4, "com.x", "security", "rule"),
+                        ("k", 16, "com.x", "uncategorized", None)])  # app screenshots: 12 min is a new session
     inherit_sessions(items, out)
-    assert [out[i]["category"] for i in "defg"] == ["security", "security", "uncategorized", "uncategorized"]
+    assert [out[i]["category"] for i in "defgk"] == ["security", "security", "uncategorized", "uncategorized",
+                                                     "uncategorized"]
     assert out["d"]["decided_by"] == "session" and out["d"]["why"].startswith("session: 3 of 3 categorized photos")
     assert out["a"]["decided_by"] == "rule"                         # categorized members never change
 
@@ -1677,3 +1681,97 @@ def test_session_needs_a_clear_majority_or_agreeing_callers():
     for items, out, iid in ((too_few, out1, "c"), (split, out2, "d"), (clash, out3, "c")):
         inherit_sessions(items, out)
         assert out[iid]["category"] == "uncategorized" and out[iid]["decided_by"] is None
+
+
+def test_camera_break_under_30_min_stays_one_session():
+    from sekerinshotto.organize import sessions
+    items, _ = _sess([("a", 3, None, "x", None), ("b", 28, None, "x", None),     # 25-min break, camera
+                      ("c", 3, "com.app", "x", None), ("d", 20, "com.app", "x", None)])   # 17 min, app
+    runs = sessions(items)
+    assert ["a", "b"] in runs and not any("c" in r for r in runs)
+
+
+# ---------------------------------------------------------------- stitching (shared by sequences and episodes)
+def test_stitch_sets_aside_fixed_header_and_bottom_bar():
+    from sekerinshotto import stitch
+    bar = ["home", "my network", "post", "notifications", "jobs"]
+    page = [f"line {n:02d} of a long post about deep tutor and its release" for n in range(20)]
+    upper = ["linkedin search bar"] + page[0:10] + bar
+    lower = ["linkedin search bar"] + page[7:17] + bar                  # scrolled 7 lines
+    lk = stitch.link(upper, lower)
+    assert lk and lk["top"] == 1 and lk["bottom"] == 5
+    joined = stitch.join([upper, lower])
+    assert joined == ["linkedin search bar"] + page[0:17]               # bar gone, header once, no gap
+
+
+def test_stitch_fuzzy_lines_but_numbers_must_match():
+    from sekerinshotto import stitch
+    assert stitch.same(stitch.key("you will investigate and resolve complex incidents"),
+                       stitch.key("you will investigate and resolve compler incidenis"))
+    assert not stitch.same(stitch.key("paragraph 00 explains one more step"), stitch.key("paragraph 09 explains one more step"))
+
+
+def test_stitch_drops_feed_buttons_and_repeated_post_header():
+    from sekerinshotto import stitch
+    head = "anonouswill > kerja kosong 10h"
+    upper = [head, "job opportunity automation test engineer", "requirements listed below",
+             "graduate in diploma or degree", "min 3 years of software testing", "view activity >", "top v"]
+    lower = ["graduate in diploma or degree", "min 3 years of software testing", head,
+             "responsibilities", "prepare test designs and test cases", "analyze data and troubleshoot issues"]
+    joined = stitch.join([upper, lower])
+    assert joined.count(head) == 1 and "view activity >" not in joined and "top v" not in joined
+    assert joined[-3:] == ["responsibilities", "prepare test designs and test cases", "analyze data and troubleshoot issues"]
+
+
+# ---------------------------------------------------------------- episodes
+def test_assign_episodes_reads_the_hub_label(tmp_path):
+    from sekerinshotto.organize import assign_episodes
+    items, out = _sess([("sha256:a1", 3, None, "learning", "user"), ("sha256:b2", 20, None, "learning", "session"),
+                        ("sha256:c3", 40, None, "learning", "session"),        # 20-min break: still one episode
+                        ("sha256:d4", 3, "com.app", "social", "rule"), ("sha256:e5", 5, "com.app", "social", "rule")])
+    for r in items.values():
+        r["_prev"] = {}
+    (tmp_path / "episodes").mkdir()
+    (tmp_path / "episodes" / "ep-a1.md").write_text("---\nid: \"ep-a1\"\nlabel: OutSystems ODC\n---\n\nbody\n")
+    assign_episodes(items, out, tmp_path)
+    assert [out[i]["episode"] for i in ("sha256:a1", "sha256:b2", "sha256:c3")] == ["ep-a1"] * 3
+    assert out["sha256:c3"]["ep_part"] == 3 and out["sha256:c3"]["ep_label"] == "OutSystems ODC"
+    assert out["sha256:d4"]["episode"] is None                          # 2 app screenshots: too few
+
+
+def test_render_episode_folds_a_re_photographed_slide_and_keeps_the_label():
+    from sekerinshotto.notes import render_episode
+    members = [{"stem": "s1", "time": "12:03", "lines": ["what is odc"], "also": ["s1b"]},
+               {"stem": "s2", "time": "12:06", "lines": ["library elements"], "also": []}]
+    meta = {"size": 3, "span": "2026-04-16 12:03–12:06", "source": "camera", "category": "learning", "label": None}
+    first = render_episode("ep-x", members, meta)
+    assert "episode label ep-x <name>" in first and "also [[s1b]]" in first and "### 12:06 · [[s2]]" in first
+    labelled = first.replace("tags:", "label: outsystems\ntags:", 1)
+    again = render_episode("ep-x", members, {**meta, "label": "outsystems"}, labelled)
+    assert again.count("label: outsystems") == 1 and "## outsystems · 3 photos" in again
+    assert '"episode/outsystems"' in again
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Apple Vision")
+def test_episode_label_tags_every_member(tmp_path):
+    import os
+    src = tmp_path / "in"
+    src.mkdir()
+    for n, (t, title) in enumerate([("120300", "What is an Application in ODC"), ("120600", "Library Elements"),
+                                    ("122800", "Events in ODC and workflows")]):
+        img = Image.new("RGB", (1200, 800), "white")
+        ImageDraw.Draw(img).text((40, 200), title, fill="black", font=ImageFont.load_default(size=56))
+        img.save(src / f"IMG_20260416_{t}.jpg")
+    env = {**os.environ, "SEKERINSHOTTO_STATE": str(tmp_path / "st"), "SEKERINSHOTTO_CONTENT": str(tmp_path / "v")}
+    _run("ingest", str(src), "--commit", env=env)
+    code, eps = _run("episode", "list", env=env)
+    assert code == 0 and len(eps["data"]["episodes"]) == 1 and eps["data"]["episodes"][0]["size"] == 3
+    eid = eps["data"]["episodes"][0]["episode"]
+    hub = tmp_path / "v" / "episodes" / f"{eid}.md"
+    assert hub.exists() and "Library Elements".lower() in hub.read_text().lower()
+    code, res = _run("episode", "label", eid, "OutSystems", "--commit", env=env)
+    assert code == 0 and res["data"]["to"] == "OutSystems"
+    notes = list((tmp_path / "v" / "notes").rglob("*.md"))
+    assert len(notes) == 3 and all('"episode/outsystems"' in n.read_text() for n in notes)
+    from sekerinshotto.notes import read_frontmatter
+    assert read_frontmatter(hub.read_text())["label"] == "OutSystems" and "## OutSystems · 3 photos" in hub.read_text()

@@ -4,16 +4,16 @@ Conservative on purpose. A link needs: same app, captured <= MAX_GAP_S apart, no
 a run of >= MIN_RUN identical content lines (>= MIN_CHARS) sitting where a scroll leaves it
 (the end of the upper screenshot, within EDGE lines, and the start of the lower one), and the
 lower screenshot must add >= MIN_NEW lines. Scrolling up is detected too (the later screenshot
-is the upper part). On the 182-screenshot sample no pair met this bar, so precision on real data
-is unmeasured; see FORMAT §6b.
+is the upper part). Matching and joining live in stitch.py (fixed interface set aside, fuzzy lines).
 """
 from __future__ import annotations
 
 import re
 from datetime import datetime
 
+from . import stitch
+
 MAX_GAP_S = 300
-MIN_RUN, MIN_CHARS, MIN_NEW, EDGE = 2, 30, 3, 3
 
 
 def _norm(t: str) -> str:
@@ -21,8 +21,7 @@ def _norm(t: str) -> str:
 
 
 def _key(t: str) -> str:
-    """Comparison form: OCR spaces the same line differently across shots ("of the" / "ofthe")."""
-    return re.sub(r"[^0-9a-z]", "", t.lower())
+    return stitch.key(t)
 
 
 def content_lines(rec: dict, text: str) -> list[str]:
@@ -32,33 +31,8 @@ def content_lines(rec: dict, text: str) -> list[str]:
     return [n for n in (_norm(l) for l in body) if len(_key(n)) >= 4]
 
 
-def _longest_run(a: list[str], b: list[str]) -> tuple[int, int, int, int]:
-    """(run, chars, i_start, j_start) of the longest common contiguous block of lines, compared by _key."""
-    ka, kb = [_key(x) for x in a], [_key(x) for x in b]
-    best = (0, 0, 0, 0)
-    pos: dict[str, list[int]] = {}
-    for j, line in enumerate(kb):
-        pos.setdefault(line, []).append(j)
-    for i, line in enumerate(ka):
-        for j in pos.get(line, []):
-            k = 0
-            while i + k < len(ka) and j + k < len(kb) and ka[i + k] == kb[j + k]:
-                k += 1
-            chars = sum(len(x) for x in ka[i:i + k])
-            if (k, chars) > best[:2]:
-                best = (k, chars, i, j)
-    return best
-
-
 def link(upper: list[str], lower: list[str]) -> dict | None:
-    """Does `lower` continue `upper` downwards? The shared run must end near upper's bottom and start
-    near lower's top, and lower must add new lines after it."""
-    k, chars, i, j = _longest_run(upper, lower)
-    if k < MIN_RUN or chars < MIN_CHARS:
-        return None
-    if len(upper) - (i + k) > EDGE or j > EDGE or len(lower) - (j + k) < MIN_NEW:
-        return None
-    return {"run": k, "chars": chars, "upper_end": i + k, "lower_from": j + k}
+    return stitch.link(upper, lower)
 
 
 def _ts(rec) -> datetime | None:
@@ -98,9 +72,5 @@ def find(items: dict[str, dict], dup_group: dict[str, str | None]) -> list[dict]
         while chain[-1] in nxt and nxt[chain[-1]] not in seen:
             chain.append(nxt[chain[-1]])
             seen.add(chain[-1])
-        merged = list(lines[chain[0]])
-        for m in chain[1:]:
-            lk = link(merged, lines[m]) or link(lines[chain[chain.index(m) - 1]], lines[m])
-            merged += lines[m][lk["lower_from"]:] if lk else ["…"] + lines[m]
-        out.append({"members": chain, "text": merged})
+        out.append({"members": chain, "text": stitch.join([lines[m] for m in chain])})
     return out
