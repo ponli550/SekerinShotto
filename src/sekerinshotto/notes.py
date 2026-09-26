@@ -7,6 +7,7 @@ from pathlib import Path
 
 from . import __version__
 from .extract import Extraction
+from .rules import KINDS
 
 START = "<!-- generated:start — owned by sekerinshotto, rewritten on re-run -->"
 END = "<!-- generated:end -->"
@@ -15,8 +16,8 @@ USER_TAIL = "\n\n## Notes\n\n"
 OWNED_KEYS = ["id", "ingester", "ingester_version", "source_type", "source_app", "captured_at",
               "ingested", "status", "status_reason", "category", "decided_by", "urls", "urls_unverified", "urls_corrected", "domains",
               "qr", "group", "rank", "group_size", "members", "source_state", "purge_after", "decided_evidence", "terms", "sequence", "seq_part", "seq_size",
-              "code_language", "code_imports", "camera_model", "episode", "episode_label", "span", "source", "topics", "tags"]
-WRITEBACK_KEYS = ("category", "decided_by", "decided_evidence")   # kept when a caller decided them
+              "code_language", "code_imports", "camera_model", "episode", "episode_label", "span", "source", "topics", "kind", "tags"]
+WRITEBACK_KEYS = ("kind", "decided_by", "decided_evidence")   # kept when a caller decided them
 WRITEBACK_BY = ("llm", "user", "laya")
 _SKIP_PKG = {"com", "org", "net", "my", "io", "co", "app", "android", "apple"}
 
@@ -144,7 +145,7 @@ def generated_body(ex: Extraction, org: dict | None = None) -> str:
         name = f" · **{org['ep_label']}**" if org.get("ep_label") else ""
         out.append(f"[[{org['episode']}]]{name} · photo {org['ep_part']} of {org['ep_size']} taken together")
     out.append("## Source")
-    src = [f"- category: **{org['category']}** — {org.get('why') or ''}"] if org else []
+    src = [f"- kind: **{org['category']}** — {org.get('why') or ''}"] if org else []
     if org and org.get("topics"):
         tw = org.get("topic_why") or {}
         src.append("- topics: " + "; ".join(f"**{t}** — {tw.get(t, '')}" for t in org["topics"]))
@@ -182,7 +183,7 @@ def render(ex: Extraction, ingested: str, existing: str | None = None, org: dict
         "id": ex.id, "ingester": "sekerinshotto", "ingester_version": __version__,
         "source_type": "image", "source_app": ex.source_app, "captured_at": ex.captured_at,
         "ingested": ingested, "status": ex.status, "status_reason": ex.status_reason,
-        "category": org["category"], "decided_by": org.get("decided_by"),
+        "kind": org["category"], "decided_by": org.get("decided_by"),
         "group": org.get("group"), "rank": org.get("rank"), "group_size": org.get("size"),
         "terms": org.get("terms") or [],
         "sequence": org.get("sequence"), "seq_part": org.get("seq_part"), "seq_size": org.get("seq_size"),
@@ -211,7 +212,7 @@ def render(ex: Extraction, ingested: str, existing: str | None = None, org: dict
         if START not in body or END not in body:
             raise NoteConflict("generated markers missing")
         current = {k: _block_value(raw) for k, raw in blocks}
-        if current.get("decided_by") in WRITEBACK_BY:
+        if current.get("decided_by") in WRITEBACK_BY and current.get("kind") in KINDS:
             for k in WRITEBACK_KEYS:
                 fm[k] = current.get(k)
         foreign = [raw for k, raw in blocks if k not in OWNED_KEYS]
@@ -235,7 +236,7 @@ def manifest_record(ex: Extraction, batch_id: str, note_path: str, source_state:
         "ingester_version": __version__, "batch_id": batch_id, "source_type": "image",
         "source_path": str(ex.path), "source_state": source_state or ex.source_state, "note_path": note_path,
         "source_app": ex.source_app, "captured_at": ex.captured_at,
-        "category": org["category"], "decided_by": org.get("decided_by"), "why": org.get("why"),
+        "kind": org["category"], "category": org["category"], "decided_by": org.get("decided_by"), "why": org.get("why"),
         "group": org.get("group"), "rank": org.get("rank"), "group_size": org.get("size"),
         "terms": org.get("terms") or [],
         "sequence": org.get("sequence"), "seq_part": org.get("seq_part"), "seq_size": org.get("seq_size"),

@@ -10,6 +10,9 @@ from pathlib import Path
 from .contract import ToolError
 
 UNCATEGORIZED = "uncategorized"
+# Kinds: what an image IS, and so its folder. Decided without reading meaning into the text.
+KINDS = ("chat", "social", "web", "email", "receipt", "document", "code", "slide", "photo", "game", "system",
+         "screenshot")
 _CATEGORY = re.compile(r"^[a-z][a-z0-9-]{0,30}$")
 
 
@@ -63,7 +66,7 @@ class Rule:
 def _compile(raw: dict, src: str) -> list[Rule]:
     rules = []
     for i, r in enumerate(raw.get("rule", []), 1):
-        cat = r.get("category", "")
+        cat = r.get("kind") or r.get("category", "")
         if not _CATEGORY.match(cat):
             raise ToolError(f"{src}: rule {i} has invalid category {cat!r} (lowercase letters, digits, hyphens)")
         if r.get("mode", "any") not in ("any", "all"):
