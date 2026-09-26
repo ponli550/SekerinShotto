@@ -38,6 +38,26 @@ category = "form"
 mode = "any"
 domains = ["forms.gle", "docs.google.com", "typeform.com", "jotform.com", "tally.so"]
 
+# Security, after event (a security meetup poster is an event) and before learning and the app rules
+# (a LinkedIn post about ransomware is about security, not "social"). One unambiguous term is enough...
+[[rule]]
+category = "security"
+mode = "any"
+text = ['\b(cyber ?security|infosec|malware|ransomware|infostealer|phishing|threat (hunting|intel(ligence)?)|data loss prevention|incident response|devsecops|osint|exfiltration|privilege escalation|zero[- ]day|cve-\d{4}-\d+|google dork(s|ing)?|dorking|reconnaissance|attack surface)\b']
+
+# ...otherwise two different families of weaker terms, so "password" + "keychain" (one family) is not enough.
+[[rule]]
+category = "security"
+mode = "any"
+text = ['\b(stealer|trojan|botnet|backdoor|rootkit|spyware|dropper|exploit(s|ed|ation)?|vulnerabilit(y|ies))\b',
+        '\b(attacker|adversar(y|ies)|persistence|lateral movement|command and control|c2|launch(daemon|agent)s?)\b',
+        '\b(soc|siem|edr|xdr|dlp|iocs?|mitre|att&ck|pentest(ing)?|red team|blue team|telemetry)\b',
+        '\b(data protection|governance, risk|grc|secure by design|access control|security (blog|research|awareness|operations|controls?|posture))\b',
+        '\b(keychain|credentials?|password (abuse|theft|dump|spray)|brute[- ]force|unauthori[sz]ed access)\b',
+        '\b(hunt(ing|able)?|detection (rule|engineering)|threat actors?|footprint(ing)?|endpoint security|process chain)\b',
+        '\b(classification|crown jewels|least privilege|accountability)\b']
+text_min = 2
+
 [[rule]]
 category = "learning"
 mode = "any"
@@ -51,7 +71,8 @@ text_min = 2
 category = "health"
 mode = "any"
 apps = ["com.hihonor.health", "com.huawei.health", "com.google.android.apps.fitness", "com.samsung.android.health"]
-text = ['\b(deep sleep|rem sleep|heart rate|blood pressure|steps|calories burned)\b']
+# a step COUNT: the bare word "steps" is every slide's "next steps"
+text = ['\b(deep sleep|rem sleep|heart rate|blood pressure|calories burned)\b', '\b\d[\d,.]*\s*(steps|langkah)\b']
 
 [[rule]]
 category = "shopping"
